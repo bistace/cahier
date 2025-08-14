@@ -156,6 +156,7 @@ func HandleEditModeKey(m Model, key string) (Model, tea.Cmd) {
 			m.currentIdx = -1
 			m.currentMode = ViewMode
 			m.cmdsHistory.SetCommands(m.cmds)
+			m.cmdsHistory.Select(len(m.cmds) - 1)
 		}
 
 	// Cancel and return to view mode
