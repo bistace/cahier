@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"strings"
+	"time"
 
 	"cahier/history"
 	"cahier/store"
@@ -50,8 +51,17 @@ func NewModel(db *store.Store) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return nil
+	// Start ticker for rainbow animation
+	return tickCmd()
 }
+
+func tickCmd() tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
+}
+
+type tickMsg time.Time
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var (
@@ -63,6 +73,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmds = append(cmds, cmd)
 
 	switch msg := msg.(type) {
+	case tickMsg:
+		// Update rainbow animation
+		m.cmdsHistory.UpdateAnimation()
+		cmds = append(cmds, tickCmd())
+		
 	case tea.KeyMsg:
 		key := msg.String()
 
