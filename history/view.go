@@ -3,6 +3,8 @@ package history
 import (
 	"cahier/store"
 	"fmt"
+	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"time"
 )
@@ -74,15 +76,22 @@ type Model struct {
 	colorIndex    int
 	lastUpdate    time.Time
 	terminalWidth int
+	viewport      viewport.Model
+	ready         bool
 }
 
 func NewModel(commands []store.Command) Model {
+	vp := viewport.New(80, 10)
+	vp.Style = lipgloss.NewStyle()
+
 	return Model{
 		commands:      commands,
 		selected:      -1,
 		colorIndex:    0,
 		lastUpdate:    time.Now(),
 		terminalWidth: 80, // Default width
+		viewport:      vp,
+		ready:         false,
 	}
 }
 
@@ -99,6 +108,14 @@ func (m Model) View() string {
 		return emptyStateStyle.Render("📝 No commands yet. Press 'n' to create one.")
 	}
 
+	if !m.ready {
+		return "Initializing..."
+	}
+
+	return m.viewport.View()
+}
+
+func (m *Model) renderContent() string {
 	var cells []string
 	for i, cmd := range m.commands {
 		// Create cell number without brackets
@@ -145,7 +162,36 @@ func (m Model) View() string {
 func (m *Model) Select(index int) {
 	if index >= 0 && index < len(m.commands) {
 		m.selected = index
+		m.updateViewport()
+		m.ensureSelectedVisible()
 	}
+}
+
+func (m *Model) ensureSelectedVisible() {
+	if m.selected < 0 || !m.ready {
+		return
+	}
+
+	// Calculate approximate line positions for each command
+	// Each command takes about 3-4 lines (with padding and borders)
+	lineHeight := 4
+	selectedLine := m.selected * lineHeight
+
+	// Check if selected item is above viewport
+	if selectedLine < m.viewport.YOffset {
+		m.viewport.SetYOffset(selectedLine)
+	}
+
+	// Check if selected item is below viewport
+	viewportBottom := m.viewport.YOffset + m.viewport.Height
+	if selectedLine+lineHeight > viewportBottom {
+		m.viewport.SetYOffset(selectedLine + lineHeight - m.viewport.Height)
+	}
+}
+
+func (m *Model) updateViewport() {
+	content := m.renderContent()
+	m.viewport.SetContent(content)
 }
 
 func (m *Model) SetCommands(commands []store.Command) {
@@ -153,8 +199,38 @@ func (m *Model) SetCommands(commands []store.Command) {
 	if m.selected >= len(commands) {
 		m.selected = len(commands) - 1
 	}
+	m.updateViewport()
+	m.ensureSelectedVisible()
 }
 
 func (m *Model) SetWidth(width int) {
 	m.terminalWidth = width
+	m.viewport.Width = width
+	m.updateViewport()
+}
+
+func (m *Model) SetHeight(height int, isEditMode bool) {
+	// Calculate available height:
+	// - App header: 3 lines (title + 2 newlines)
+	// - Footer: 1 line
+	// - Bottom margin: 2 lines
+	reservedLines := 6
+
+	// Reserve additional space when in edit mode for the textarea
+	if isEditMode {
+		// Textarea takes about 5-6 lines with borders and padding
+		reservedLines += 6
+	}
+
+	adjustedHeight := max(height-reservedLines, 5)
+	m.viewport.Height = adjustedHeight
+	m.ready = true
+	m.updateViewport()
+	m.ensureSelectedVisible()
+}
+
+func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.viewport, cmd = m.viewport.Update(msg)
+	return m, cmd
 }

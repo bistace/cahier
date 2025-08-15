@@ -40,6 +40,7 @@ func NewModel(db *store.Store) Model {
 	currentIdx := len(cmds) - 1
 	cmdsHistory := history.NewModel(cmds)
 	cmdsHistory.Select(currentIdx)
+	cmdsHistory.SetHeight(24, false)
 
 	ta := textarea.New()
 	ta.ShowLineNumbers = false
@@ -78,7 +79,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd  tea.Cmd
 	)
 
+	// Pass messages to textarea
 	m.textarea, cmd = m.textarea.Update(msg)
+	cmds = append(cmds, cmd)
+
+	// Pass messages to history viewport
+	m.cmdsHistory, cmd = m.cmdsHistory.Update(msg)
 	cmds = append(cmds, cmd)
 
 	switch msg := msg.(type) {
@@ -92,6 +98,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.cmdsHistory.SetWidth(msg.Width)
+		m.cmdsHistory.SetHeight(msg.Height, m.currentMode == EditMode)
 		m.textarea.SetWidth(msg.Width - 4 - 1 - 4 - 2)
 
 	case tea.KeyMsg:
@@ -124,9 +131,10 @@ func HandleViewModeKey(m Model, key string) (Model, tea.Cmd) {
 		m.currentCmd = store.Command{}
 		m.textarea.SetValue("")
 		m.textarea.Focus()
+		m.cmdsHistory.SetHeight(m.height, true)
 
 	// Go one command up
-	case "up":
+	case "up", "k":
 		if len(m.cmds) > 0 {
 			if m.currentIdx == -1 {
 				m.currentIdx = len(m.cmds) - 1
@@ -137,7 +145,7 @@ func HandleViewModeKey(m Model, key string) (Model, tea.Cmd) {
 		}
 
 	// Go one command down
-	case "down":
+	case "down", "j":
 		if len(m.cmds) > 0 {
 			if m.currentIdx == -1 {
 				m.currentIdx = 0
@@ -157,6 +165,7 @@ func HandleViewModeKey(m Model, key string) (Model, tea.Cmd) {
 		m.textarea.SetValue(m.currentCmd.Command)
 		m.textarea.Focus()
 		m.textarea.CursorEnd()
+		m.cmdsHistory.SetHeight(m.height, true)
 	}
 
 	return m, nil
@@ -190,11 +199,13 @@ func HandleEditModeKey(m Model, key string) (Model, tea.Cmd) {
 			m.currentMode = ViewMode
 			m.cmdsHistory.SetCommands(m.cmds)
 			m.cmdsHistory.Select(len(m.cmds) - 1)
+			m.cmdsHistory.SetHeight(m.height, false)
 		}
 
 	// Cancel and return to view mode
 	case "esc":
 		m.currentMode = ViewMode
+		m.cmdsHistory.SetHeight(m.height, false)
 	}
 
 	return m, nil
