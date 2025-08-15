@@ -27,6 +27,8 @@ type Model struct {
 	currentIdx  int
 	textarea    textarea.Model
 	cmdsHistory history.Model
+	width       int
+	height      int
 }
 
 func NewModel(db *store.Store) Model {
@@ -47,6 +49,8 @@ func NewModel(db *store.Store) Model {
 		currentIdx:  currentIdx,
 		textarea:    textarea.New(),
 		cmdsHistory: cmdsHistory,
+		width:       80, // Default width
+		height:      24, // Default height
 	}
 }
 
@@ -77,7 +81,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update rainbow animation
 		m.cmdsHistory.UpdateAnimation()
 		cmds = append(cmds, tickCmd())
-		
+
+	case tea.WindowSizeMsg:
+		// Update terminal dimensions
+		m.width = msg.Width
+		m.height = msg.Height
+		m.cmdsHistory.SetWidth(msg.Width)
+		m.textarea.SetWidth(msg.Width - 2)
+
 	case tea.KeyMsg:
 		key := msg.String()
 

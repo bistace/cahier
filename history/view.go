@@ -58,9 +58,8 @@ var (
 					MarginRight(1).
 					Bold(true)
 
-	// Content container
-	cellContentStyle = lipgloss.NewStyle().
-				MaxWidth(80)
+	// Content container (width will be set dynamically)
+	cellContentStyle = lipgloss.NewStyle()
 
 	// Empty state style
 	emptyStateStyle = lipgloss.NewStyle().
@@ -70,18 +69,20 @@ var (
 )
 
 type Model struct {
-	commands   []store.Command
-	selected   int
-	colorIndex int
-	lastUpdate time.Time
+	commands      []store.Command
+	selected      int
+	colorIndex    int
+	lastUpdate    time.Time
+	terminalWidth int
 }
 
 func NewModel(commands []store.Command) Model {
 	return Model{
-		commands:   commands,
-		selected:   -1,
-		colorIndex: 0,
-		lastUpdate: time.Now(),
+		commands:      commands,
+		selected:      -1,
+		colorIndex:    0,
+		lastUpdate:    time.Now(),
+		terminalWidth: 80, // Default width
 	}
 }
 
@@ -98,6 +99,13 @@ func (m Model) View() string {
 		return emptyStateStyle.Render("📝 No commands yet. Press 'n' to create one.")
 	}
 
+	// Calculate available width for content
+	// Account for cell number (8 chars + 1 margin), padding (2*2 for selected, 2*1 for normal), and border (2 chars)
+	contentWidth := m.terminalWidth - 8 - 1 - 4 - 2
+	if contentWidth < 20 {
+		contentWidth = 20 // Minimum width
+	}
+
 	var cells []string
 	for i, cmd := range m.commands {
 		// Create cell number like "[1]:"
@@ -105,19 +113,27 @@ func (m Model) View() string {
 
 		// Choose styles based on selection
 		var cellStyle, numberStyle lipgloss.Style
+		var currentContentWidth int
 		if i == m.selected {
 			// Create animated rainbow border and number for selected cell
 			rainbowColor := rainbowColors[m.colorIndex]
 			cellStyle = selectedCellBaseStyle.BorderForeground(lipgloss.Color(rainbowColor))
 			numberStyle = selectedCellNumberBaseStyle.Foreground(lipgloss.Color(rainbowColor))
+			// Selected cell has more padding
+			currentContentWidth = m.terminalWidth - 8 - 1 - 6 - 2
 		} else {
 			cellStyle = normalCellStyle
 			numberStyle = cellNumberStyle
+			currentContentWidth = m.terminalWidth - 8 - 1 - 4 - 2
 		}
 
-		// Render cell number and content
+		if currentContentWidth < 20 {
+			currentContentWidth = 20 // Minimum width
+		}
+
+		// Render cell number and content with dynamic width
 		cellNumber := numberStyle.Render(cellNum)
-		cellContent := cellContentStyle.Render(cmd.Command)
+		cellContent := cellContentStyle.Width(currentContentWidth).Render(cmd.Command)
 
 		// Combine cell number with the cell container (center vertically)
 		cell := lipgloss.JoinHorizontal(
@@ -144,4 +160,8 @@ func (m *Model) SetCommands(commands []store.Command) {
 	if m.selected >= len(commands) {
 		m.selected = len(commands) - 1
 	}
+}
+
+func (m *Model) SetWidth(width int) {
+	m.terminalWidth = width
 }

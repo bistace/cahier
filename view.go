@@ -24,7 +24,7 @@ func (m Model) View() string {
 	// 		s += m.textarea.View() + "\n\n"
 	// 	}
 	// }
-	s += m.cmdsHistory.View()
+	s += m.cmdsHistory.View() + "\n\n"
 
 	if m.currentMode == EditMode && m.currentIdx == -1 {
 		s += m.textarea.View() + "\n\n"
