@@ -41,13 +41,18 @@ func NewModel(db *store.Store) Model {
 	cmdsHistory := history.NewModel(cmds)
 	cmdsHistory.Select(currentIdx)
 
+	ta := textarea.New()
+	ta.ShowLineNumbers = false
+	ta.Prompt = ""
+	ta.SetWidth(80 - 4 - 1 - 4 - 2)
+
 	return Model{
 		currentMode: ViewMode,
 		store:       db,
 		cmds:        cmds,
 		currentCmd:  store.Command{},
 		currentIdx:  currentIdx,
-		textarea:    textarea.New(),
+		textarea:    ta,
 		cmdsHistory: cmdsHistory,
 		width:       80, // Default width
 		height:      24, // Default height
@@ -87,7 +92,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.cmdsHistory.SetWidth(msg.Width)
-		m.textarea.SetWidth(msg.Width - 2)
+		m.textarea.SetWidth(msg.Width - 4 - 1 - 4 - 2)
 
 	case tea.KeyMsg:
 		key := msg.String()

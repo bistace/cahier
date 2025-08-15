@@ -47,13 +47,13 @@ var (
 	// Cell number styles
 	cellNumberStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#B19CD9")). // Muted purple
-			Width(8).
+			Width(4).
 			Align(lipgloss.Right).
 			MarginRight(1)
 
 	// Base style for selected cell number (color will be dynamic)
 	selectedCellNumberBaseStyle = lipgloss.NewStyle().
-					Width(8).
+					Width(4).
 					Align(lipgloss.Right).
 					MarginRight(1).
 					Bold(true)
@@ -99,17 +99,10 @@ func (m Model) View() string {
 		return emptyStateStyle.Render("📝 No commands yet. Press 'n' to create one.")
 	}
 
-	// Calculate available width for content
-	// Account for cell number (8 chars + 1 margin), padding (2*2 for selected, 2*1 for normal), and border (2 chars)
-	contentWidth := m.terminalWidth - 8 - 1 - 4 - 2
-	if contentWidth < 20 {
-		contentWidth = 20 // Minimum width
-	}
-
 	var cells []string
 	for i, cmd := range m.commands {
-		// Create cell number like "[1]:"
-		cellNum := fmt.Sprintf("[%d]:", i+1)
+		// Create cell number without brackets
+		cellNum := fmt.Sprintf("%d:", i+1)
 
 		// Choose styles based on selection
 		var cellStyle, numberStyle lipgloss.Style
@@ -120,11 +113,11 @@ func (m Model) View() string {
 			cellStyle = selectedCellBaseStyle.BorderForeground(lipgloss.Color(rainbowColor))
 			numberStyle = selectedCellNumberBaseStyle.Foreground(lipgloss.Color(rainbowColor))
 			// Selected cell has more padding
-			currentContentWidth = m.terminalWidth - 8 - 1 - 6 - 2
+			currentContentWidth = m.terminalWidth - 4 - 1 - 6 - 2
 		} else {
 			cellStyle = normalCellStyle
 			numberStyle = cellNumberStyle
-			currentContentWidth = m.terminalWidth - 8 - 1 - 4 - 2
+			currentContentWidth = m.terminalWidth - 4 - 1 - 4 - 2
 		}
 
 		if currentContentWidth < 20 {
