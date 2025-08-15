@@ -189,6 +189,13 @@ func (m *Model) ensureSelectedVisible() {
 	}
 }
 
+func (m *Model) ScrollToBottom() {
+	if !m.ready {
+		return
+	}
+	m.viewport.GotoBottom()
+}
+
 func (m *Model) updateViewport() {
 	content := m.renderContent()
 	m.viewport.SetContent(content)
@@ -200,7 +207,7 @@ func (m *Model) SetCommands(commands []store.Command) {
 		m.selected = len(commands) - 1
 	}
 	m.updateViewport()
-	m.ensureSelectedVisible()
+	m.ScrollToBottom()
 }
 
 func (m *Model) SetWidth(width int) {
@@ -224,9 +231,20 @@ func (m *Model) SetHeight(height int, isEditMode bool) {
 
 	adjustedHeight := max(height-reservedLines, 5)
 	m.viewport.Height = adjustedHeight
+	wasReady := m.ready
 	m.ready = true
 	m.updateViewport()
-	m.ensureSelectedVisible()
+
+	// Scroll to bottom on initial load
+	if !wasReady {
+		m.ScrollToBottom()
+	} else if isEditMode {
+		// When entering edit mode, always scroll to show the bottom commands
+		// This ensures the last commands are visible above the textarea
+		m.ScrollToBottom()
+	} else {
+		m.ensureSelectedVisible()
+	}
 }
 
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
