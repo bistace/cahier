@@ -6,6 +6,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"strings"
 	"time"
 )
 
@@ -78,6 +79,7 @@ type Model struct {
 	terminalWidth int
 	viewport      viewport.Model
 	ready         bool
+	linePositions []int // Track the starting line position of each command
 }
 
 func NewModel(commands []store.Command) Model {
@@ -92,6 +94,7 @@ func NewModel(commands []store.Command) Model {
 		terminalWidth: 80, // Default width
 		viewport:      vp,
 		ready:         false,
+		linePositions: make([]int, 0),
 	}
 }
 
@@ -117,7 +120,13 @@ func (m Model) View() string {
 
 func (m *Model) renderContent() string {
 	var cells []string
+	m.linePositions = make([]int, len(m.commands))
+	currentLine := 0
+
 	for i, cmd := range m.commands {
+		// Store the starting line position for this command
+		m.linePositions[i] = currentLine
+
 		// Create cell number without brackets
 		cellNum := fmt.Sprintf("%d:", i+1)
 
@@ -153,6 +162,11 @@ func (m *Model) renderContent() string {
 		)
 
 		cells = append(cells, cell)
+
+		// Calculate how many lines this cell takes up
+		// Count newlines in the rendered cell plus 1 for the cell itself
+		cellLines := strings.Count(cell, "\n") + 1
+		currentLine += cellLines
 	}
 
 	// Join all cells vertically
@@ -173,25 +187,45 @@ func (m *Model) ClearSelection() {
 }
 
 func (m *Model) ensureSelectedVisible() {
-	if m.selected < 0 || !m.ready {
+	if m.selected < 0 || !m.ready || m.selected >= len(m.linePositions) {
 		return
 	}
 
-	// Calculate approximate line positions for each command
-	// Each command takes about 3-4 lines (with padding and borders)
-	lineHeight := 4
-	selectedLine := m.selected * lineHeight
+	// Get the actual line position of the selected command
+	selectedLine := m.linePositions[m.selected]
 
-	// Check if selected item is above viewport
-	if selectedLine < m.viewport.YOffset {
-		m.viewport.SetYOffset(selectedLine)
+	// Calculate the height of the selected command
+	// We need to find the start of the next command or use total line count for the last command
+	var selectedHeight int
+	if m.selected < len(m.linePositions)-1 {
+		selectedHeight = m.linePositions[m.selected+1] - selectedLine
+	} else {
+		// For the last command, estimate based on average or use a reasonable default
+		selectedHeight = 4 // Default estimate for last command
 	}
 
-	// Check if selected item is below viewport
-	viewportBottom := m.viewport.YOffset + m.viewport.Height
-	if selectedLine+lineHeight > viewportBottom {
-		m.viewport.SetYOffset(selectedLine + lineHeight - m.viewport.Height)
+	// Calculate the desired offset to center the selected item
+	// We want the middle of the selected item to appear in the middle of the viewport
+	viewportMiddle := m.viewport.Height / 2
+	selectedMiddle := selectedLine + (selectedHeight / 2)
+	desiredOffset := selectedMiddle - viewportMiddle
+
+	// Ensure we don't scroll past the top
+	if desiredOffset < 0 {
+		desiredOffset = 0
 	}
+
+	// Ensure we don't scroll past the bottom
+	maxOffset := m.viewport.TotalLineCount() - m.viewport.Height
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if desiredOffset > maxOffset {
+		desiredOffset = maxOffset
+	}
+
+	// Set the viewport offset to center the selected item
+	m.viewport.SetYOffset(desiredOffset)
 }
 
 func (m *Model) ScrollToBottom() {
