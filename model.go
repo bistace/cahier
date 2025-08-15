@@ -2,9 +2,11 @@ package main
 
 import (
 	"log"
+	"strings"
 
 	"cahier/history"
 	"cahier/store"
+
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -135,7 +137,7 @@ func HandleEditModeKey(m Model, key string) (Model, tea.Cmd) {
 	case "enter":
 		command := m.textarea.Value()
 		if command != "" {
-			m.currentCmd.Command = command
+			m.currentCmd.Command = strings.TrimRight(command, "\r\n")
 
 			// TODO: find a title for the command
 			var err error
