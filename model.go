@@ -131,6 +131,7 @@ func HandleViewModeKey(m Model, key string) (Model, tea.Cmd) {
 		m.currentCmd = store.Command{}
 		m.textarea.SetValue("")
 		m.textarea.Focus()
+		m.cmdsHistory.ClearSelection()
 		m.cmdsHistory.SetHeight(m.height, true)
 
 	// Go one command up

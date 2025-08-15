@@ -167,6 +167,11 @@ func (m *Model) Select(index int) {
 	}
 }
 
+func (m *Model) ClearSelection() {
+	m.selected = -1
+	m.updateViewport()
+}
+
 func (m *Model) ensureSelectedVisible() {
 	if m.selected < 0 || !m.ready {
 		return
