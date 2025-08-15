@@ -40,7 +40,7 @@ var (
 	// Base style for selected cell (border color will be dynamic)
 	selectedCellBaseStyle = lipgloss.NewStyle().
 				Padding(1, 2).
-				Margin(0, 0, 1, 0).
+				Margin(0, 0, 0, 0).
 				BorderStyle(lipgloss.ThickBorder()).
 				Bold(true)
 
@@ -119,9 +119,9 @@ func (m Model) View() string {
 		cellNumber := numberStyle.Render(cellNum)
 		cellContent := cellContentStyle.Render(cmd.Command)
 
-		// Combine cell number with the cell container
+		// Combine cell number with the cell container (center vertically)
 		cell := lipgloss.JoinHorizontal(
-			lipgloss.Top,
+			lipgloss.Center,
 			cellNumber,
 			cellStyle.Render(cellContent),
 		)
