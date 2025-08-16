@@ -20,7 +20,9 @@ func (s *Store) Init(dbPath string) error {
 
 	query := `CREATE TABLE IF NOT EXISTS commands (
 		id integer not null primary key,
-		command text not null
+		command text not null,
+		status text default '',
+		return_code integer default 0
 	);`
 
 	if _, err = s.conn.Exec(query); err != nil {
@@ -31,7 +33,7 @@ func (s *Store) Init(dbPath string) error {
 }
 
 func (s *Store) GetCommands() ([]Command, error) {
-	rows, err := s.conn.Query("SELECT * FROM commands")
+	rows, err := s.conn.Query("SELECT id, command, status, return_code FROM commands")
 	if err != nil {
 		return nil, err
 	}
@@ -40,7 +42,7 @@ func (s *Store) GetCommands() ([]Command, error) {
 	cmds := []Command{}
 	for rows.Next() {
 		var cmd Command
-		rows.Scan(&cmd.ID, &cmd.Command)
+		rows.Scan(&cmd.ID, &cmd.Command, &cmd.Status, &cmd.ReturnCode)
 		cmds = append(cmds, cmd)
 	}
 
@@ -52,12 +54,14 @@ func (s *Store) SaveCommand(cmd Command) error {
 		cmd.ID = time.Now().UTC().UnixNano()
 	}
 
-	query := `INSERT INTO commands (id, command)
-		VALUES (?, ?)
+	query := `INSERT INTO commands (id, command, status, return_code)
+		VALUES (?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE
-		SET command=excluded.command;`
+		SET command=excluded.command,
+		    status=excluded.status,
+		    return_code=excluded.return_code;`
 
-	if _, err := s.conn.Exec(query, cmd.ID, cmd.Command); err != nil {
+	if _, err := s.conn.Exec(query, cmd.ID, cmd.Command, cmd.Status, cmd.ReturnCode); err != nil {
 		return err
 	}
 

@@ -2,9 +2,9 @@ package history
 
 import (
 	"cahier/store"
+	ta "cahier/textarea"
 	"fmt"
 	"github.com/charmbracelet/bubbles/textarea"
-	ta "cahier/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
