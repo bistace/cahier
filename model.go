@@ -8,8 +8,8 @@ import (
 	"cahier/history"
 	"cahier/store"
 
-	"github.com/charmbracelet/bubbles/textarea"
 	ta "cahier/textarea"
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -107,9 +107,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cmdsHistory, cmd = m.cmdsHistory.Update(msg)
 			cmds = append(cmds, cmd)
 			return HandleViewModeKey(m, key)
+
 		case EditMode:
 			switch key {
-			case "ctrl+r", "esc":
+			case "ctrl+r", "ctrl+s", "esc":
 				// Handle these without passing to textarea
 				return HandleEditModeKey(m, key)
 			default:
@@ -118,6 +119,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 				return m, tea.Batch(cmds...)
 			}
+
 		case NewCommandMode:
 			switch key {
 			case "ctrl+r", "esc":
@@ -130,6 +132,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(cmds...)
 			}
 		}
+
 	default:
 		// Pass non-keyboard messages to both components
 		m.textarea, cmd = m.textarea.Update(msg)
@@ -190,14 +193,53 @@ func HandleViewModeKey(m Model, key string) (Model, tea.Cmd) {
 
 func HandleEditModeKey(m Model, key string) (Model, tea.Cmd) {
 	switch key {
-	// Save the inline edited command
+	// Save the inline edited command without running it
+	case "ctrl+s":
+		return saveCommand(m)
+
+	// Save the inline edited command and run it
+	// TODO: implement the running part
 	case "ctrl+r":
-		command := m.cmdsHistory.GetEditedCommand()
+		return saveCommand(m)
+
+	// Cancel inline editing and return to view mode
+	case "esc":
+		m.cmdsHistory.StopInlineEdit()
+		m.currentMode = ViewMode
+	}
+
+	return m, nil
+}
+
+func HandleNewCommandModeKey(m Model, key string) (Model, tea.Cmd) {
+	switch key {
+	// Register a new command
+	// TODO: implement running the command
+	case "ctrl+r":
+		return saveCommand(m)
+
+	// Cancel and return to view mode
+	case "esc":
+		m.currentMode = ViewMode
+		m.cmdsHistory.SetHeight(m.height, false)
+	}
+
+	return m, nil
+}
+
+// Save the command to the database and switch to viewMode
+func saveCommand(m Model) (Model, tea.Cmd) {
+	var command string
+	var err error
+
+	switch m.currentMode {
+	case EditMode:
+		// Get command from inline edit
+		command = m.cmdsHistory.GetEditedCommand()
 		if command != "" && m.currentIdx >= 0 {
 			m.currentCmd = m.cmds[m.currentIdx]
 			m.currentCmd.Command = strings.TrimRight(command, "\r\n")
 
-			var err error
 			if err = m.store.SaveCommand(m.currentCmd); err != nil {
 				log.Fatalf("Failed to save command to db: %v", err)
 				return m, tea.Quit
@@ -215,50 +257,35 @@ func HandleEditModeKey(m Model, key string) (Model, tea.Cmd) {
 			m.currentMode = ViewMode
 		}
 
-	// Cancel inline editing and return to view mode
-	case "esc":
-		m.cmdsHistory.StopInlineEdit()
-		m.currentMode = ViewMode
-	}
-
-	return m, nil
-}
-
-func HandleNewCommandModeKey(m Model, key string) (Model, tea.Cmd) {
-	switch key {
-	// Register a new command
-	case "ctrl+r":
-		command := m.textarea.Value()
+	case NewCommandMode:
+		// Get command from textarea
+		command = m.textarea.Value()
 		if command != "" {
-			m.currentCmd.Command = strings.TrimRight(command, "\r\n")
+			m.currentCmd = store.Command{
+				ID:      0, // Will be set by SaveCommand
+				Command: strings.TrimRight(command, "\r\n"),
+			}
 
-			// TODO: find a title for the command
-			var err error
 			if err = m.store.SaveCommand(m.currentCmd); err != nil {
 				log.Fatalf("Failed to save command to db: %v", err)
-				// TODO: maybe handle this more gracefully
 				return m, tea.Quit
 			}
 
 			m.cmds, err = m.store.GetCommands()
 			if err != nil {
 				log.Fatalf("Failed to get commands: %v", err)
-				// TODO: maybe handle this more gracefully
 				return m, tea.Quit
 			}
 
-			m.currentCmd = store.Command{}
-			m.currentIdx = -1
-			m.currentMode = ViewMode
+			// Select the newly added command (last one)
+			m.currentIdx = len(m.cmds) - 1
 			m.cmdsHistory.SetCommands(m.cmds)
-			m.cmdsHistory.Select(len(m.cmds) - 1)
+			m.cmdsHistory.Select(m.currentIdx)
 			m.cmdsHistory.SetHeight(m.height, false)
+			m.currentMode = ViewMode
+			m.textarea.SetValue("")
+			m.textarea.Blur()
 		}
-
-	// Cancel and return to view mode
-	case "esc":
-		m.currentMode = ViewMode
-		m.cmdsHistory.SetHeight(m.height, false)
 	}
 
 	return m, nil
