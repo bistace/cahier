@@ -9,8 +9,8 @@ import (
 	"cahier/store"
 
 	"github.com/charmbracelet/bubbles/textarea"
+	ta "cahier/textarea"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 type Status int
@@ -44,23 +44,7 @@ func NewModel(db *store.Store) Model {
 	cmdsHistory.Select(currentIdx)
 	cmdsHistory.SetHeight(24, false)
 
-	ta := textarea.New()
-	ta.ShowLineNumbers = false
-	ta.Prompt = ""
-	ta.SetWidth(80 - 4 - 1 - 4 - 2)
-
-	// Make textarea background transparent
-	ta.FocusedStyle.Base = ta.FocusedStyle.Base.Background(lipgloss.NoColor{})
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.FocusedStyle.Text = ta.FocusedStyle.Text.Background(lipgloss.NoColor{})
-	ta.FocusedStyle.Placeholder = ta.FocusedStyle.Placeholder.Background(lipgloss.NoColor{})
-	ta.FocusedStyle.EndOfBuffer = ta.FocusedStyle.EndOfBuffer.Background(lipgloss.NoColor{})
-
-	ta.BlurredStyle.Base = ta.BlurredStyle.Base.Background(lipgloss.NoColor{})
-	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
-	ta.BlurredStyle.Text = ta.BlurredStyle.Text.Background(lipgloss.NoColor{})
-	ta.BlurredStyle.Placeholder = ta.BlurredStyle.Placeholder.Background(lipgloss.NoColor{})
-	ta.BlurredStyle.EndOfBuffer = ta.BlurredStyle.EndOfBuffer.Background(lipgloss.NoColor{})
+	textarea := ta.NewWithWidth(80 - 4 - 1 - 4 - 2)
 
 	return Model{
 		currentMode: ViewMode,
@@ -68,7 +52,7 @@ func NewModel(db *store.Store) Model {
 		cmds:        cmds,
 		currentCmd:  store.Command{},
 		currentIdx:  currentIdx,
-		textarea:    ta,
+		textarea:    textarea,
 		cmdsHistory: cmdsHistory,
 		width:       80, // Default width
 		height:      24, // Default height

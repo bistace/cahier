@@ -4,6 +4,7 @@ import (
 	"cahier/store"
 	"fmt"
 	"github.com/charmbracelet/bubbles/textarea"
+	ta "cahier/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -89,29 +90,13 @@ func NewModel(commands []store.Command) Model {
 	vp := viewport.New(80, 10)
 	vp.Style = lipgloss.NewStyle()
 
-	ta := textarea.New()
-	ta.ShowLineNumbers = false
-	ta.Prompt = ""
-	ta.SetWidth(60) // Will be adjusted dynamically
-
-	// Make textarea background transparent
-	ta.FocusedStyle.Base = ta.FocusedStyle.Base.Background(lipgloss.NoColor{})
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.FocusedStyle.Text = ta.FocusedStyle.Text.Background(lipgloss.NoColor{})
-	ta.FocusedStyle.Placeholder = ta.FocusedStyle.Placeholder.Background(lipgloss.NoColor{})
-	ta.FocusedStyle.EndOfBuffer = ta.FocusedStyle.EndOfBuffer.Background(lipgloss.NoColor{})
-
-	ta.BlurredStyle.Base = ta.BlurredStyle.Base.Background(lipgloss.NoColor{})
-	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
-	ta.BlurredStyle.Text = ta.BlurredStyle.Text.Background(lipgloss.NoColor{})
-	ta.BlurredStyle.Placeholder = ta.BlurredStyle.Placeholder.Background(lipgloss.NoColor{})
-	ta.BlurredStyle.EndOfBuffer = ta.BlurredStyle.EndOfBuffer.Background(lipgloss.NoColor{})
+	textarea := ta.NewWithWidth(60) // Will be adjusted dynamically
 
 	return Model{
 		commands:      commands,
 		selected:      -1,
 		editingIndex:  -1,
-		textarea:      ta,
+		textarea:      textarea,
 		colorIndex:    0,
 		lastUpdate:    time.Now(),
 		terminalWidth: 80, // Default width
