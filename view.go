@@ -47,7 +47,7 @@ func (m Model) View() string {
 	case ViewMode:
 		s += faintStyle.Render("n: New cell - enter: Edit selected command - ctrl+d: Quit")
 	case EditMode:
-		s += faintStyle.Render("ctrl+r: Save - escape: Cancel - ctrl+d: Quit")
+		s += faintStyle.Render("ctrl+r: Run - ctrl+s: Save - escape: Cancel - ctrl+d: Quit")
 	case NewCommandMode:
 		s += faintStyle.Render("ctrl+r: Run - escape: Cancel - ctrl+d: Quit")
 	}

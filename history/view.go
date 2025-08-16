@@ -175,8 +175,19 @@ func (m *Model) renderContent() string {
 				cellStyle.Render(cellContent),
 			)
 		} else {
-			// Render normal command text
-			cellContent = cellContentStyle.Width(currentContentWidth).Render(cmd.Command)
+			// Render normal command text with status indicator
+			statusIcon := ""
+			switch cmd.Status {
+			case store.StatusRunning:
+				statusIcon = "🔄 "
+			case store.StatusSuccess:
+				statusIcon = "✅ "
+			case store.StatusFailed:
+				statusIcon = fmt.Sprintf("❌ (exit %d) ", cmd.ReturnCode)
+			}
+			
+			commandText := statusIcon + cmd.Command
+			cellContent = cellContentStyle.Width(currentContentWidth).Render(commandText)
 			cell = lipgloss.JoinHorizontal(
 				lipgloss.Center,
 				cellNumber,

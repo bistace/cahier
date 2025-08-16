@@ -67,3 +67,13 @@ func (s *Store) SaveCommand(cmd Command) error {
 
 	return nil
 }
+
+func (s *Store) UpdateCommandStatus(id int64, status string, returnCode int) error {
+	query := `UPDATE commands SET status = ?, return_code = ? WHERE id = ?`
+	
+	if _, err := s.conn.Exec(query, status, returnCode, id); err != nil {
+		return err
+	}
+	
+	return nil
+}

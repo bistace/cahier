@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"cahier/executor"
 	"cahier/history"
 	"cahier/store"
 
@@ -72,6 +73,15 @@ func tickCmd() tea.Cmd {
 
 type tickMsg time.Time
 
+type execStartMsg struct {
+	cmdID int64
+}
+
+type execCompleteMsg struct {
+	cmdID    int64
+	exitCode int
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var (
 		cmds []tea.Cmd
@@ -133,8 +143,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case execStartMsg:
+		// Update command status to running
+		for i, cmd := range m.cmds {
+			if cmd.ID == msg.cmdID {
+				m.cmds[i].Status = store.StatusRunning
+				m.cmds[i].ReturnCode = 0
+				m.store.UpdateCommandStatus(msg.cmdID, store.StatusRunning, 0)
+				m.cmdsHistory.SetCommands(m.cmds)
+				break
+			}
+		}
+	
+	case execCompleteMsg:
+		// Update command status based on exit code
+		status := store.StatusSuccess
+		if msg.exitCode != 0 {
+			status = store.StatusFailed
+		}
+		
+		for i, cmd := range m.cmds {
+			if cmd.ID == msg.cmdID {
+				m.cmds[i].Status = status
+				m.cmds[i].ReturnCode = msg.exitCode
+				m.store.UpdateCommandStatus(msg.cmdID, status, msg.exitCode)
+				m.cmdsHistory.SetCommands(m.cmds)
+				break
+			}
+		}
+	
 	default:
-		// Pass non-keyboard messages to both components
+		// Pass non-keyboard messages to components
 		m.textarea, cmd = m.textarea.Update(msg)
 		cmds = append(cmds, cmd)
 
@@ -195,12 +234,11 @@ func HandleEditModeKey(m Model, key string) (Model, tea.Cmd) {
 	switch key {
 	// Save the inline edited command without running it
 	case "ctrl+s":
-		return saveCommand(m)
+		return saveCommand(m), nil
 
 	// Save the inline edited command and run it
-	// TODO: implement the running part
 	case "ctrl+r":
-		return saveCommand(m)
+		return saveAndRunCommand(m)
 
 	// Cancel inline editing and return to view mode
 	case "esc":
@@ -213,10 +251,9 @@ func HandleEditModeKey(m Model, key string) (Model, tea.Cmd) {
 
 func HandleNewCommandModeKey(m Model, key string) (Model, tea.Cmd) {
 	switch key {
-	// Register a new command
-	// TODO: implement running the command
+	// Register a new command and run it
 	case "ctrl+r":
-		return saveCommand(m)
+		return saveAndRunCommand(m)
 
 	// Cancel and return to view mode
 	case "esc":
@@ -228,7 +265,7 @@ func HandleNewCommandModeKey(m Model, key string) (Model, tea.Cmd) {
 }
 
 // Save the command to the database and switch to viewMode
-func saveCommand(m Model) (Model, tea.Cmd) {
+func saveCommand(m Model) Model {
 	var command string
 	var err error
 
@@ -242,13 +279,13 @@ func saveCommand(m Model) (Model, tea.Cmd) {
 
 			if err = m.store.SaveCommand(m.currentCmd); err != nil {
 				log.Fatalf("Failed to save command to db: %v", err)
-				return m, tea.Quit
+				return m
 			}
 
 			m.cmds, err = m.store.GetCommands()
 			if err != nil {
 				log.Fatalf("Failed to get commands: %v", err)
-				return m, tea.Quit
+				return m
 			}
 
 			m.cmdsHistory.StopInlineEdit()
@@ -268,13 +305,13 @@ func saveCommand(m Model) (Model, tea.Cmd) {
 
 			if err = m.store.SaveCommand(m.currentCmd); err != nil {
 				log.Fatalf("Failed to save command to db: %v", err)
-				return m, tea.Quit
+				return m
 			}
 
 			m.cmds, err = m.store.GetCommands()
 			if err != nil {
 				log.Fatalf("Failed to get commands: %v", err)
-				return m, tea.Quit
+				return m
 			}
 
 			// Select the newly added command (last one)
@@ -288,5 +325,40 @@ func saveCommand(m Model) (Model, tea.Cmd) {
 		}
 	}
 
+	return m
+}
+
+// Execute command and return a tea.Cmd that will run it asynchronously
+func executeCommand(cmdID int64, command string) tea.Cmd {
+	return func() tea.Msg {
+		result := executor.ExecuteCommand(command)
+		return execCompleteMsg{
+			cmdID:    cmdID,
+			exitCode: result.ExitCode,
+		}
+	}
+}
+
+// Save and run the command
+func saveAndRunCommand(m Model) (Model, tea.Cmd) {
+	m = saveCommand(m)
+	
+	// Find the command that was just saved/updated and execute it
+	if m.currentMode == ViewMode && m.currentIdx >= 0 && m.currentIdx < len(m.cmds) {
+		cmd := m.cmds[m.currentIdx]
+		// Update command status to running
+		for i, c := range m.cmds {
+			if c.ID == cmd.ID {
+				m.cmds[i].Status = store.StatusRunning
+				m.cmds[i].ReturnCode = 0
+				m.store.UpdateCommandStatus(cmd.ID, store.StatusRunning, 0)
+				m.cmdsHistory.SetCommands(m.cmds)
+				break
+			}
+		}
+		// Return the async command execution
+		return m, executeCommand(cmd.ID, cmd.Command)
+	}
+	
 	return m, nil
 }
