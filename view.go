@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -29,13 +28,9 @@ func (m Model) View() string {
 
 	s += m.cmdsHistory.View() + "\n\n"
 
-	if m.currentMode == EditMode {
-		var label string
-		if m.currentIdx == -1 {
-			label = textareaLabelStyle.Render("New:")
-		} else {
-			label = textareaLabelStyle.Render(fmt.Sprintf("%d:", m.currentIdx+1))
-		}
+	// Only show bottom textarea for new commands
+	if m.currentMode == NewCommandMode {
+		label := textareaLabelStyle.Render("New:")
 
 		// Render the textarea with the styled container
 		textareaContent := textareaStyle.Render(m.textarea.View())
@@ -52,6 +47,8 @@ func (m Model) View() string {
 	case ViewMode:
 		s += faintStyle.Render("n: New cell - enter: Edit selected command - ctrl+d: Quit")
 	case EditMode:
+		s += faintStyle.Render("ctrl+r: Save - escape: Cancel - ctrl+d: Quit")
+	case NewCommandMode:
 		s += faintStyle.Render("ctrl+r: Run - escape: Cancel - ctrl+d: Quit")
 	}
 

@@ -3,6 +3,7 @@ package history
 import (
 	"cahier/store"
 	"fmt"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -74,6 +75,8 @@ var (
 type Model struct {
 	commands      []store.Command
 	selected      int
+	editingIndex  int // Index of command being edited inline (-1 if none)
+	textarea      textarea.Model
 	colorIndex    int
 	lastUpdate    time.Time
 	terminalWidth int
@@ -86,9 +89,29 @@ func NewModel(commands []store.Command) Model {
 	vp := viewport.New(80, 10)
 	vp.Style = lipgloss.NewStyle()
 
+	ta := textarea.New()
+	ta.ShowLineNumbers = false
+	ta.Prompt = ""
+	ta.SetWidth(60) // Will be adjusted dynamically
+
+	// Make textarea background transparent
+	ta.FocusedStyle.Base = ta.FocusedStyle.Base.Background(lipgloss.NoColor{})
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.FocusedStyle.Text = ta.FocusedStyle.Text.Background(lipgloss.NoColor{})
+	ta.FocusedStyle.Placeholder = ta.FocusedStyle.Placeholder.Background(lipgloss.NoColor{})
+	ta.FocusedStyle.EndOfBuffer = ta.FocusedStyle.EndOfBuffer.Background(lipgloss.NoColor{})
+
+	ta.BlurredStyle.Base = ta.BlurredStyle.Base.Background(lipgloss.NoColor{})
+	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
+	ta.BlurredStyle.Text = ta.BlurredStyle.Text.Background(lipgloss.NoColor{})
+	ta.BlurredStyle.Placeholder = ta.BlurredStyle.Placeholder.Background(lipgloss.NoColor{})
+	ta.BlurredStyle.EndOfBuffer = ta.BlurredStyle.EndOfBuffer.Background(lipgloss.NoColor{})
+
 	return Model{
 		commands:      commands,
 		selected:      -1,
+		editingIndex:  -1,
+		textarea:      ta,
 		colorIndex:    0,
 		lastUpdate:    time.Now(),
 		terminalWidth: 80, // Default width
@@ -152,14 +175,29 @@ func (m *Model) renderContent() string {
 
 		// Render cell number and content with dynamic width
 		cellNumber := numberStyle.Render(cellNum)
-		cellContent := cellContentStyle.Width(currentContentWidth).Render(cmd.Command)
 
-		// Combine cell number with the cell container (center vertically)
-		cell := lipgloss.JoinHorizontal(
-			lipgloss.Center,
-			cellNumber,
-			cellStyle.Render(cellContent),
-		)
+		var cellContent string
+		var cell string
+
+		// Check if this command is being edited inline
+		if i == m.editingIndex {
+			// Render the textarea for inline editing
+			m.textarea.SetWidth(currentContentWidth)
+			cellContent = m.textarea.View()
+			cell = lipgloss.JoinHorizontal(
+				lipgloss.Center,
+				cellNumber,
+				cellStyle.Render(cellContent),
+			)
+		} else {
+			// Render normal command text
+			cellContent = cellContentStyle.Width(currentContentWidth).Render(cmd.Command)
+			cell = lipgloss.JoinHorizontal(
+				lipgloss.Center,
+				cellNumber,
+				cellStyle.Render(cellContent),
+			)
+		}
 
 		cells = append(cells, cell)
 
@@ -208,18 +246,11 @@ func (m *Model) ensureSelectedVisible() {
 	// We want the middle of the selected item to appear in the middle of the viewport
 	viewportMiddle := m.viewport.Height / 2
 	selectedMiddle := selectedLine + (selectedHeight / 2)
-	desiredOffset := selectedMiddle - viewportMiddle
 
 	// Ensure we don't scroll past the top
-	if desiredOffset < 0 {
-		desiredOffset = 0
-	}
-
+	desiredOffset := max(selectedMiddle-viewportMiddle, 0)
 	// Ensure we don't scroll past the bottom
-	maxOffset := m.viewport.TotalLineCount() - m.viewport.Height
-	if maxOffset < 0 {
-		maxOffset = 0
-	}
+	maxOffset := max(m.viewport.TotalLineCount()-m.viewport.Height, 0)
 	if desiredOffset > maxOffset {
 		desiredOffset = maxOffset
 	}
@@ -286,8 +317,56 @@ func (m *Model) SetHeight(height int, isEditMode bool) {
 	}
 }
 
+func (m *Model) StartInlineEdit(index int) {
+	if index >= 0 && index < len(m.commands) {
+		m.editingIndex = index
+		m.textarea.SetValue(m.commands[index].Command)
+		m.textarea.Focus()
+		m.textarea.CursorEnd()
+		m.updateViewport()
+		m.ensureSelectedVisible()
+	}
+}
+
+func (m *Model) StopInlineEdit() {
+	m.editingIndex = -1
+	m.textarea.Blur()
+	m.updateViewport()
+}
+
+func (m *Model) GetEditedCommand() string {
+	if m.editingIndex >= 0 {
+		return m.textarea.Value()
+	}
+	return ""
+}
+
+func (m *Model) IsEditing() bool {
+	return m.editingIndex >= 0
+}
+
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
+	var cmds []tea.Cmd
 	var cmd tea.Cmd
+
+	// If editing inline, pass keyboard input to textarea first
+	if m.editingIndex >= 0 {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			// Let parent handle special keys like ctrl+r and esc
+			key := msg.String()
+			if key != "ctrl+r" && key != "esc" {
+				m.textarea, cmd = m.textarea.Update(msg)
+				cmds = append(cmds, cmd)
+				m.updateViewport()
+				// Don't let viewport process keyboard events during inline editing
+				return m, tea.Batch(cmds...)
+			}
+		}
+	}
+
+	// Only update viewport if not processing inline edit keyboard events
 	m.viewport, cmd = m.viewport.Update(msg)
-	return m, cmd
+	cmds = append(cmds, cmd)
+	return m, tea.Batch(cmds...)
 }

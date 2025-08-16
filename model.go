@@ -16,8 +16,9 @@ import (
 type Status int
 
 const (
-	ViewMode Status = iota
-	EditMode
+	ViewMode       Status = iota
+	EditMode              // For inline editing of existing commands
+	NewCommandMode        // For creating new commands
 )
 
 type Model struct {
@@ -104,7 +105,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.cmdsHistory.SetWidth(msg.Width)
-		m.cmdsHistory.SetHeight(msg.Height, m.currentMode == EditMode)
+		m.cmdsHistory.SetHeight(msg.Height, m.currentMode == NewCommandMode)
 		m.textarea.SetWidth(msg.Width - 4 - 1 - 4 - 2)
 
 	case tea.KeyMsg:
@@ -128,7 +129,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Handle these without passing to textarea
 				return HandleEditModeKey(m, key)
 			default:
-				// Pass other keys to textarea in edit mode
+				// Pass other keys to the history's textarea
+				m.cmdsHistory, cmd = m.cmdsHistory.Update(msg)
+				cmds = append(cmds, cmd)
+				return m, tea.Batch(cmds...)
+			}
+		case NewCommandMode:
+			switch key {
+			case "ctrl+r", "esc":
+				// Handle these without passing to textarea
+				return HandleNewCommandModeKey(m, key)
+			default:
+				// Pass other keys to textarea in new command mode
 				m.textarea, cmd = m.textarea.Update(msg)
 				cmds = append(cmds, cmd)
 				return m, tea.Batch(cmds...)
@@ -150,7 +162,7 @@ func HandleViewModeKey(m Model, key string) (Model, tea.Cmd) {
 
 	// Create a new command
 	case "n":
-		m.currentMode = EditMode
+		m.currentMode = NewCommandMode
 		m.currentIdx = -1
 		m.currentCmd = store.Command{}
 		m.textarea.SetValue("")
@@ -180,23 +192,55 @@ func HandleViewModeKey(m Model, key string) (Model, tea.Cmd) {
 			m.cmdsHistory.Select(m.currentIdx)
 		}
 
-	// Edit the current command
+	// Edit the current command inline
 	case "enter":
 		if m.currentIdx < 0 {
 			return m, nil
 		}
 		m.currentMode = EditMode
-		m.currentCmd = m.cmds[m.currentIdx]
-		m.textarea.SetValue(m.currentCmd.Command)
-		m.textarea.Focus()
-		m.textarea.CursorEnd()
-		m.cmdsHistory.SetHeight(m.height, true)
+		m.cmdsHistory.StartInlineEdit(m.currentIdx)
 	}
 
 	return m, nil
 }
 
 func HandleEditModeKey(m Model, key string) (Model, tea.Cmd) {
+	switch key {
+	// Save the inline edited command
+	case "ctrl+r":
+		command := m.cmdsHistory.GetEditedCommand()
+		if command != "" && m.currentIdx >= 0 {
+			m.currentCmd = m.cmds[m.currentIdx]
+			m.currentCmd.Command = strings.TrimRight(command, "\r\n")
+
+			var err error
+			if err = m.store.SaveCommand(m.currentCmd); err != nil {
+				log.Fatalf("Failed to save command to db: %v", err)
+				return m, tea.Quit
+			}
+
+			m.cmds, err = m.store.GetCommands()
+			if err != nil {
+				log.Fatalf("Failed to get commands: %v", err)
+				return m, tea.Quit
+			}
+
+			m.cmdsHistory.StopInlineEdit()
+			m.cmdsHistory.SetCommands(m.cmds)
+			m.cmdsHistory.Select(m.currentIdx)
+			m.currentMode = ViewMode
+		}
+
+	// Cancel inline editing and return to view mode
+	case "esc":
+		m.cmdsHistory.StopInlineEdit()
+		m.currentMode = ViewMode
+	}
+
+	return m, nil
+}
+
+func HandleNewCommandModeKey(m Model, key string) (Model, tea.Cmd) {
 	switch key {
 	// Register a new command
 	case "ctrl+r":
