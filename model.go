@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type Status int
@@ -46,6 +47,19 @@ func NewModel(db *store.Store) Model {
 	ta.ShowLineNumbers = false
 	ta.Prompt = ""
 	ta.SetWidth(80 - 4 - 1 - 4 - 2)
+	
+	// Make textarea background transparent
+	ta.FocusedStyle.Base = ta.FocusedStyle.Base.Background(lipgloss.NoColor{})
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.FocusedStyle.Text = ta.FocusedStyle.Text.Background(lipgloss.NoColor{})
+	ta.FocusedStyle.Placeholder = ta.FocusedStyle.Placeholder.Background(lipgloss.NoColor{})
+	ta.FocusedStyle.EndOfBuffer = ta.FocusedStyle.EndOfBuffer.Background(lipgloss.NoColor{})
+	
+	ta.BlurredStyle.Base = ta.BlurredStyle.Base.Background(lipgloss.NoColor{})
+	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
+	ta.BlurredStyle.Text = ta.BlurredStyle.Text.Background(lipgloss.NoColor{})
+	ta.BlurredStyle.Placeholder = ta.BlurredStyle.Placeholder.Background(lipgloss.NoColor{})
+	ta.BlurredStyle.EndOfBuffer = ta.BlurredStyle.EndOfBuffer.Background(lipgloss.NoColor{})
 
 	return Model{
 		currentMode: ViewMode,
