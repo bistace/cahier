@@ -47,14 +47,14 @@ func NewModel(db *store.Store) Model {
 	ta.ShowLineNumbers = false
 	ta.Prompt = ""
 	ta.SetWidth(80 - 4 - 1 - 4 - 2)
-	
+
 	// Make textarea background transparent
 	ta.FocusedStyle.Base = ta.FocusedStyle.Base.Background(lipgloss.NoColor{})
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ta.FocusedStyle.Text = ta.FocusedStyle.Text.Background(lipgloss.NoColor{})
 	ta.FocusedStyle.Placeholder = ta.FocusedStyle.Placeholder.Background(lipgloss.NoColor{})
 	ta.FocusedStyle.EndOfBuffer = ta.FocusedStyle.EndOfBuffer.Background(lipgloss.NoColor{})
-	
+
 	ta.BlurredStyle.Base = ta.BlurredStyle.Base.Background(lipgloss.NoColor{})
 	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
 	ta.BlurredStyle.Text = ta.BlurredStyle.Text.Background(lipgloss.NoColor{})
@@ -93,14 +93,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd  tea.Cmd
 	)
 
-	// Pass messages to textarea
-	m.textarea, cmd = m.textarea.Update(msg)
-	cmds = append(cmds, cmd)
-
-	// Pass messages to history viewport
-	m.cmdsHistory, cmd = m.cmdsHistory.Update(msg)
-	cmds = append(cmds, cmd)
-
 	switch msg := msg.(type) {
 	case tickMsg:
 		// Update rainbow animation
@@ -127,10 +119,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Mode-dependant keybindings
 		switch m.currentMode {
 		case ViewMode:
+			m.cmdsHistory, cmd = m.cmdsHistory.Update(msg)
+			cmds = append(cmds, cmd)
 			return HandleViewModeKey(m, key)
 		case EditMode:
-			return HandleEditModeKey(m, key)
+			switch key {
+			case "ctrl+r", "esc":
+				// Handle these without passing to textarea
+				return HandleEditModeKey(m, key)
+			default:
+				// Pass other keys to textarea in edit mode
+				m.textarea, cmd = m.textarea.Update(msg)
+				cmds = append(cmds, cmd)
+				return m, tea.Batch(cmds...)
+			}
 		}
+	default:
+		// Pass non-keyboard messages to both components
+		m.textarea, cmd = m.textarea.Update(msg)
+		cmds = append(cmds, cmd)
+
+		m.cmdsHistory, cmd = m.cmdsHistory.Update(msg)
+		cmds = append(cmds, cmd)
 	}
 	return m, tea.Batch(cmds...)
 }
@@ -189,7 +199,7 @@ func HandleViewModeKey(m Model, key string) (Model, tea.Cmd) {
 func HandleEditModeKey(m Model, key string) (Model, tea.Cmd) {
 	switch key {
 	// Register a new command
-	case "enter":
+	case "ctrl+r":
 		command := m.textarea.Value()
 		if command != "" {
 			m.currentCmd.Command = strings.TrimRight(command, "\r\n")

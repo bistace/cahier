@@ -50,7 +50,7 @@ var (
 	// Cell number styles
 	cellNumberStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#B19CD9")). // Muted purple
-			Width(4).
+			Width(5).
 			Align(lipgloss.Right).
 			MarginRight(1)
 

@@ -19,7 +19,7 @@ var (
 	// Style for the label
 	textareaLabelStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#B19CD9")).
-				Width(4).
+				Width(5).
 				Align(lipgloss.Right).
 				MarginRight(1)
 )
@@ -50,9 +50,9 @@ func (m Model) View() string {
 
 	switch m.currentMode {
 	case ViewMode:
-		s += faintStyle.Render("n: new cell - enter: edit selected command - ctrl+d: Quit")
+		s += faintStyle.Render("n: New cell - enter: Edit selected command - ctrl+d: Quit")
 	case EditMode:
-		s += faintStyle.Render("escape: Cancel - ctrl+d: Quit")
+		s += faintStyle.Render("ctrl+r: Run - escape: Cancel - ctrl+d: Quit")
 	}
 
 	return s
