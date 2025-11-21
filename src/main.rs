@@ -13,25 +13,14 @@ mod db;
 struct Args {
     #[command(subcommand)]
     command: Option<Commands>,
-    
-    /// Optional name for this session (used when starting default mode)
-    #[arg(short, long)]
-    session: Option<String>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start a new cahier session (default)
-    Start {
-        #[arg(short, long)]
-        session: Option<String>,
-    },
-    /// Export a session to markdown
+    /// Start cahier REPL (default)
+    Start,
+    /// Export history to markdown
     Export {
-        /// The ID of the session to export (defaults to latest)
-        #[arg(short, long)]
-        id: Option<i64>,
-        
         /// Output file path (default: stdout)
         #[arg(short, long)]
         output: Option<String>,
@@ -40,8 +29,6 @@ enum Commands {
         #[arg(long)]
         only_commands: bool,
     },
-    /// List all sessions
-    List,
 }
 
 fn main() -> Result<()> {
@@ -49,16 +36,11 @@ fn main() -> Result<()> {
     let db = db::Database::init("cahier.db")?;
 
     match args.command {
-        Some(Commands::Export { id, output, only_commands }) => {
-            let session_id = match id {
-                Some(id) => id,
-                None => db.get_last_session_id()?.ok_or_else(|| anyhow::anyhow!("No sessions found"))?,
-            };
-            
+        Some(Commands::Export { output, only_commands }) => {
             let content = if only_commands {
-                generate_commands_text(&db, session_id)?
+                generate_commands_text(&db)?
             } else {
-                generate_markdown(&db, session_id)?
+                generate_markdown(&db)?
             };
             
             if let Some(path) = output {
@@ -68,29 +50,20 @@ fn main() -> Result<()> {
             }
             return Ok(());
         }
-        Some(Commands::List) => {
-            let sessions = db.list_sessions()?;
-            println!("{:<5} | {:<25} | {}", "ID", "Start Time", "Name");
-            println!("{:-<5} | {:-<25} | {:-<20}", "", "", "");
-            for s in sessions {
-                println!("{:<5} | {:<25} | {}", s.id, s.start_time, s.name.unwrap_or_default());
-            }
-            return Ok(());
-        }
-        Some(Commands::Start { session }) => {
-            run_repl(db, session)?;
+        Some(Commands::Start) => {
+            run_repl(db)?;
         }
         None => {
             // Default behavior: start REPL
-            run_repl(db, args.session)?;
+            run_repl(db)?;
         }
     }
 
     Ok(())
 }
 
-fn generate_commands_text(db: &db::Database, session_id: i64) -> Result<String> {
-    let entries = db.get_entries(session_id)?;
+fn generate_commands_text(db: &db::Database) -> Result<String> {
+    let entries = db.get_entries()?;
     let mut text = String::new();
     for entry in entries {
         text.push_str(&entry.command);
@@ -99,13 +72,11 @@ fn generate_commands_text(db: &db::Database, session_id: i64) -> Result<String> 
     Ok(text)
 }
 
-fn generate_markdown(db: &db::Database, session_id: i64) -> Result<String> {
-    let session = db.get_session(session_id)?;
-    let entries = db.get_entries(session_id)?;
+fn generate_markdown(db: &db::Database) -> Result<String> {
+    let entries = db.get_entries()?;
     
     let mut md = String::new();
-    md.push_str(&format!("# Cahier Session: {}\n\n", session.name.unwrap_or_else(|| format!("Session {}", session_id))));
-    md.push_str(&format!("**Date:** {}\n\n", session.start_time));
+    md.push_str("# Cahier Export\n\n");
     
     for entry in entries {
         md.push_str(&format!("### `{}`\n", entry.cwd));
@@ -132,10 +103,8 @@ fn generate_markdown(db: &db::Database, session_id: i64) -> Result<String> {
     Ok(md)
 }
 
-fn run_repl(db: db::Database, session_name: Option<String>) -> Result<()> {
-    let session_id = db.create_session(session_name)?;
-
-    println!("Cahier session started. (Session ID: {})", session_id);
+fn run_repl(db: db::Database) -> Result<()> {
+    println!("Cahier started.");
     println!("Database: ./cahier.db");
 
     let history = Box::new(
@@ -166,7 +135,7 @@ fn run_repl(db: db::Database, session_name: Option<String>) -> Result<()> {
                     } else {
                          // Log cd command as well, though output is empty
                         let cwd = std::env::current_dir()?.to_string_lossy().to_string();
-                        db.log_entry(session_id, input, "", &cwd, Some(0), 0)?;
+                        db.log_entry(input, "", &cwd, Some(0), 0)?;
                     }
                     continue;
                 }
@@ -180,7 +149,6 @@ fn run_repl(db: db::Database, session_name: Option<String>) -> Result<()> {
                         
                         // Save to DB
                         db.log_entry(
-                            session_id,
                             input,
                             &output,
                             &cwd,
