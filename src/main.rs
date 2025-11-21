@@ -4,6 +4,7 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 mod common;
+mod completion;
 mod db;
 mod executor;
 mod export;

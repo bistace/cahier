@@ -1,11 +1,12 @@
 use anyhow::Result;
-use reedline::{DefaultPrompt, FileBackedHistory, Reedline, Signal};
+use reedline::{ColumnarMenu, DefaultPrompt, Emacs, FileBackedHistory, KeyCode, KeyModifiers, Reedline, ReedlineEvent, ReedlineMenu, Signal};
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::common::{HISTORY_FILENAME, MAX_HISTORY_ENTRIES};
+use crate::completion::FileCompleter;
 use crate::db;
 use crate::executor;
 
@@ -49,7 +50,20 @@ pub fn run_repl(
         FileBackedHistory::with_file(MAX_HISTORY_ENTRIES, HISTORY_FILENAME.into())
             .map_err(|e| anyhow::anyhow!("Error creating history file: {:?}", e))?,
     );
-    let mut line_editor = Reedline::create().with_history(history);
+    // Bind Tab to the completion menu
+    let mut keybindings = reedline::default_emacs_keybindings();
+    keybindings.add_binding(
+        KeyModifiers::from_bits_truncate(0),
+        KeyCode::Tab,
+        ReedlineEvent::Menu("completion_menu".to_string()),
+    );
+    let edit_mode = Emacs::new(keybindings);
+
+    let mut line_editor = Reedline::create()
+        .with_history(history)
+        .with_completer(Box::new(FileCompleter::new()))
+        .with_menu(ReedlineMenu::EngineCompleter(Box::new(ColumnarMenu::default().with_name("completion_menu"))))
+        .with_edit_mode(Box::new(edit_mode));
     let prompt = DefaultPrompt::default();
 
     // Initialize current environment
