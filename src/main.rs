@@ -6,6 +6,7 @@ use reedline::{DefaultPrompt, FileBackedHistory, Reedline, Signal};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 mod db;
@@ -57,11 +58,43 @@ fn main() -> Result<()> {
             return Ok(());
         }
         Some(Commands::Start { max_output_size }) => {
-            run_repl(db, max_output_size)?;
+            // Setup PTY writer state for Ctrl+C handling
+            let pty_writer: Arc<Mutex<Option<Box<dyn Write + Send>>>> = Arc::new(Mutex::new(None));
+            
+            // Register Ctrl+C handler
+            let writer_clone = Arc::clone(&pty_writer);
+            ctrlc::set_handler(move || {
+                if let Ok(mut writer_opt) = writer_clone.lock() {
+                    if let Some(writer) = writer_opt.as_mut() {
+                        // Send Ctrl+C (ETX) to the running command
+                        let _ = writer.write_all(&[3]);
+                        let _ = writer.flush();
+                    }
+                    // If no writer, do nothing (at prompt)
+                }
+            })?;
+            
+            run_repl(db, max_output_size, pty_writer)?;
         }
         None => {
             // Default behavior: start REPL with default max_output_size
-            run_repl(db, 16384)?;
+            // Setup PTY writer state for Ctrl+C handling
+            let pty_writer: Arc<Mutex<Option<Box<dyn Write + Send>>>> = Arc::new(Mutex::new(None));
+            
+            // Register Ctrl+C handler
+            let writer_clone = Arc::clone(&pty_writer);
+            ctrlc::set_handler(move || {
+                if let Ok(mut writer_opt) = writer_clone.lock() {
+                    if let Some(writer) = writer_opt.as_mut() {
+                        // Send Ctrl+C (ETX) to the running command
+                        let _ = writer.write_all(&[3]);
+                        let _ = writer.flush();
+                    }
+                    // If no writer, do nothing (at prompt)
+                }
+            })?;
+            
+            run_repl(db, 16384, pty_writer)?;
         }
     }
 
@@ -113,7 +146,7 @@ fn generate_markdown(db: &db::Database) -> Result<String> {
     Ok(md)
 }
 
-fn run_repl(db: db::Database, max_output_size: usize) -> Result<()> {
+fn run_repl(db: db::Database, max_output_size: usize, pty_writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>) -> Result<()> {
     println!("Cahier started.");
     println!("Database: ./cahier.db");
     println!("Max output size: {} bytes", max_output_size);
@@ -153,7 +186,7 @@ fn run_repl(db: db::Database, max_output_size: usize) -> Result<()> {
 
                 // Execute command
                 let start = Instant::now();
-                match execute_in_pty(input, max_output_size) {
+                match execute_in_pty(input, max_output_size, &pty_writer) {
                     Ok((output, exit_code, output_file)) => {
                         let duration = start.elapsed();
                         let cwd = std::env::current_dir()?.to_string_lossy().to_string();
@@ -173,7 +206,13 @@ fn run_repl(db: db::Database, max_output_size: usize) -> Result<()> {
                     }
                 }
             }
-            Ok(Signal::CtrlD) | Ok(Signal::CtrlC) => {
+            Ok(Signal::CtrlC) => {
+                // Handle Ctrl+C at prompt - just continue to next prompt
+                println!("^C");
+                continue;
+            }
+            Ok(Signal::CtrlD) => {
+                // Handle Ctrl+D - exit the REPL
                 break;
             }
             Err(e) => {
@@ -185,7 +224,7 @@ fn run_repl(db: db::Database, max_output_size: usize) -> Result<()> {
     Ok(())
 }
 
-fn execute_in_pty(command: &str, max_output_size: usize) -> Result<(String, Option<i32>, Option<String>)> {
+fn execute_in_pty(command: &str, max_output_size: usize, pty_writer: &Arc<Mutex<Option<Box<dyn Write + Send>>>>) -> Result<(String, Option<i32>, Option<String>)> {
     let pty_system = native_pty_system();
 
     // Get terminal size for the PTY to match current term
@@ -214,6 +253,28 @@ fn execute_in_pty(command: &str, max_output_size: usize) -> Result<(String, Opti
     
     // Drop slave to close the write-end of the pipe in this process
     drop(pair.slave);
+
+    // Register the writer for Ctrl+C handling
+    let writer = pair.master.take_writer()?;
+    {
+        let mut writer_opt = pty_writer.lock().unwrap();
+        *writer_opt = Some(writer);
+    }
+
+    // Ensure we clear the writer when done (using a scope guard pattern)
+    struct WriterGuard {
+        pty_writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    }
+    impl Drop for WriterGuard {
+        fn drop(&mut self) {
+            if let Ok(mut writer_opt) = self.pty_writer.lock() {
+                *writer_opt = None;
+            }
+        }
+    }
+    let _guard = WriterGuard {
+        pty_writer: Arc::clone(pty_writer),
+    };
 
     let mut reader = pair.master.try_clone_reader()?;
     
@@ -286,7 +347,8 @@ mod tests {
     #[test]
     fn test_execute_in_pty() {
         // simple echo
-        let (output, exit_code, output_file) = execute_in_pty("echo 'hello world'", 1024).expect("failed to execute");
+        let pty_writer = Arc::new(Mutex::new(None));
+        let (output, exit_code, output_file) = execute_in_pty("echo 'hello world'", 1024, &pty_writer).expect("failed to execute");
         assert!(output.contains("hello world"));
         assert_eq!(exit_code, Some(0));
         assert!(output_file.is_none());
@@ -296,7 +358,8 @@ mod tests {
     fn test_execute_failure() {
         // command not found
         // bash -c "nonexistent" returns 127 (or non-zero)
-        let (_output, exit_code, _output_file) = execute_in_pty("nonexistent_command_123", 1024).expect("failed to execute");
+        let pty_writer = Arc::new(Mutex::new(None));
+        let (_output, exit_code, _output_file) = execute_in_pty("nonexistent_command_123", 1024, &pty_writer).expect("failed to execute");
         // exit_code depends on shell, but should be Some(non-zero)
         assert_ne!(exit_code, Some(0));
     }
