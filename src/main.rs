@@ -35,6 +35,10 @@ enum Commands {
         /// Output file path (default: stdout)
         #[arg(short, long)]
         output: Option<String>,
+
+        /// Export only the commands (plain text)
+        #[arg(long)]
+        only_commands: bool,
     },
     /// List all sessions
     List,
@@ -45,18 +49,22 @@ fn main() -> Result<()> {
     let db = db::Database::init("cahier.db")?;
 
     match args.command {
-        Some(Commands::Export { id, output }) => {
+        Some(Commands::Export { id, output, only_commands }) => {
             let session_id = match id {
                 Some(id) => id,
                 None => db.get_last_session_id()?.ok_or_else(|| anyhow::anyhow!("No sessions found"))?,
             };
             
-            let markdown = generate_markdown(&db, session_id)?;
+            let content = if only_commands {
+                generate_commands_text(&db, session_id)?
+            } else {
+                generate_markdown(&db, session_id)?
+            };
             
             if let Some(path) = output {
-                std::fs::write(path, markdown)?;
+                std::fs::write(path, content)?;
             } else {
-                println!("{}", markdown);
+                println!("{}", content);
             }
             return Ok(());
         }
@@ -79,6 +87,16 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn generate_commands_text(db: &db::Database, session_id: i64) -> Result<String> {
+    let entries = db.get_entries(session_id)?;
+    let mut text = String::new();
+    for entry in entries {
+        text.push_str(&entry.command);
+        text.push('\n');
+    }
+    Ok(text)
 }
 
 fn generate_markdown(db: &db::Database, session_id: i64) -> Result<String> {
@@ -104,7 +122,11 @@ fn generate_markdown(db: &db::Database, session_id: i64) -> Result<String> {
             md.push_str("\n```\n\n");
         }
         
-        md.push_str(&format!("*Exit Code: {:?} | Duration: {}ms*\n\n---\n\n", entry.exit_code, entry.duration_ms));
+        md.push_str(&format!("*Time: {} | Exit Code: {:?} | Duration: {}ms*\n\n---\n\n", 
+            entry.timestamp.format("%H:%M:%S"), 
+            entry.exit_code, 
+            entry.duration_ms
+        ));
     }
     
     Ok(md)

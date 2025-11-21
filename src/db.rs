@@ -14,6 +14,7 @@ pub struct Session {
 }
 
 pub struct Entry {
+    #[allow(dead_code)]
     pub id: i64,
     pub command: String,
     pub output: String,
