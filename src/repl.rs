@@ -18,13 +18,14 @@ use crate::executor;
 ///
 /// # Returns
 /// Ok(()) if successful, Err if the directory change fails
-pub fn handle_cd(path: &str, current_env: &mut HashMap<String, String>) -> Result<()> {
+pub fn handle_cd(path: &str, current_env: &Arc<Mutex<HashMap<String, String>>>) -> Result<()> {
     std::env::set_current_dir(path)?;
     
     // Update PWD in current_env
     if let Ok(cwd) = std::env::current_dir() {
         if let Some(cwd_str) = cwd.to_str() {
-            current_env.insert("PWD".to_string(), cwd_str.to_string());
+            let mut env = current_env.lock().unwrap();
+            env.insert("PWD".to_string(), cwd_str.to_string());
         }
     }
     
@@ -59,15 +60,16 @@ pub fn run_repl(
     );
     let edit_mode = Emacs::new(keybindings);
 
+    // Initialize current environment
+    let current_env: Arc<Mutex<HashMap<String, String>>> = 
+        Arc::new(Mutex::new(std::env::vars().collect()));
+
     let mut line_editor = Reedline::create()
         .with_history(history)
-        .with_completer(Box::new(FileCompleter::new()))
+        .with_completer(Box::new(FileCompleter::new(current_env.clone())))
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(ColumnarMenu::default().with_name("completion_menu"))))
         .with_edit_mode(Box::new(edit_mode));
     let prompt = DefaultPrompt::default();
-
-    // Initialize current environment
-    let mut current_env: HashMap<String, String> = std::env::vars().collect();
 
     loop {
         let sig = line_editor.read_line(&prompt);
@@ -85,7 +87,7 @@ pub fn run_repl(
                 // Handle 'cd' manually
                 if input.starts_with("cd ") {
                     let path = input.strip_prefix("cd ").unwrap().trim();
-                    if let Err(e) = handle_cd(path, &mut current_env) {
+                    if let Err(e) = handle_cd(path, &current_env) {
                         eprintln!("Error changing directory: {}", e);
                     } else {
                         // Log cd command as well, though output is empty
@@ -96,7 +98,7 @@ pub fn run_repl(
 
                 // Execute command
                 let start = Instant::now();
-                match executor::execute_in_pty(input, max_output_size, &pty_writer, &mut current_env)
+                match executor::execute_in_pty(input, max_output_size, &pty_writer, &current_env)
                 {
                     Ok((output, exit_code, output_file)) => {
                         let duration = start.elapsed();
@@ -150,23 +152,26 @@ mod tests {
         std::fs::create_dir_all(&test_dir)?;
         
         // Initialize environment
-        let mut env: HashMap<String, String> = std::env::vars().collect();
+        let env = Arc::new(Mutex::new(std::env::vars().collect()));
         
         // Change to the test directory
         let test_dir_str = test_dir.to_str().unwrap();
-        handle_cd(test_dir_str, &mut env)?;
+        handle_cd(test_dir_str, &env)?;
         
         // Verify current directory changed
         let current_dir = std::env::current_dir()?;
         assert_eq!(current_dir, test_dir);
         
         // Verify PWD environment variable was updated
-        assert!(env.contains_key("PWD"));
-        let pwd = env.get("PWD").unwrap();
-        assert_eq!(PathBuf::from(pwd), test_dir);
+        {
+            let env_map = env.lock().unwrap();
+            assert!(env_map.contains_key("PWD"));
+            let pwd = env_map.get("PWD").unwrap();
+            assert_eq!(PathBuf::from(pwd), test_dir);
+        }
         
         // Test error case: try to cd to non-existent directory
-        let result = handle_cd("/this/directory/does/not/exist/cahier_test_xyz", &mut env);
+        let result = handle_cd("/this/directory/does/not/exist/cahier_test_xyz", &env);
         assert!(result.is_err());
         
         // Restore original directory
@@ -189,18 +194,18 @@ mod tests {
         let test_sub = test_base.join("subdir");
         std::fs::create_dir_all(&test_sub)?;
         
-        let mut env: HashMap<String, String> = std::env::vars().collect();
+        let env = Arc::new(Mutex::new(std::env::vars().collect()));
         
         // Change to base directory
-        handle_cd(test_base.to_str().unwrap(), &mut env)?;
+        handle_cd(test_base.to_str().unwrap(), &env)?;
         assert_eq!(std::env::current_dir()?, test_base);
         
         // Change to subdirectory using relative path
-        handle_cd("subdir", &mut env)?;
+        handle_cd("subdir", &env)?;
         assert_eq!(std::env::current_dir()?, test_sub);
         
         // Go back up using relative path
-        handle_cd("..", &mut env)?;
+        handle_cd("..", &env)?;
         assert_eq!(std::env::current_dir()?, test_base);
         
         // Restore and cleanup

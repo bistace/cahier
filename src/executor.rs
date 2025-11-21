@@ -23,7 +23,7 @@ pub fn execute_in_pty(
     command: &str,
     max_output_size: usize,
     pty_writer: &Arc<Mutex<Option<Box<dyn Write + Send>>>>,
-    current_env: &mut HashMap<String, String>,
+    current_env: &Arc<Mutex<HashMap<String, String>>>,
 ) -> Result<(String, Option<i32>, Option<String>)> {
     let pty_system = native_pty_system();
 
@@ -54,8 +54,11 @@ pub fn execute_in_pty(
 
     // Clear and set environment from current_env
     cmd.env_clear();
-    for (key, value) in current_env.iter() {
-        cmd.env(key, value);
+    {
+        let env = current_env.lock().unwrap();
+        for (key, value) in env.iter() {
+            cmd.env(key, value);
+        }
     }
 
     // Set current directory
@@ -176,7 +179,8 @@ pub fn execute_in_pty(
         // Only update current_env if we successfully parsed at least some variables
         // This prevents losing all environment variables if the dump is empty or invalid
         if !new_env.is_empty() {
-            *current_env = new_env;
+            let mut env = current_env.lock().unwrap();
+            *env = new_env;
         }
 
         // Clean up the temp file
@@ -198,9 +202,9 @@ mod tests {
     fn test_execute_in_pty() {
         // simple echo
         let pty_writer = Arc::new(Mutex::new(None));
-        let mut env = std::env::vars().collect();
+        let env = Arc::new(Mutex::new(std::env::vars().collect()));
         let (output, exit_code, output_file) =
-            execute_in_pty("echo 'hello world'", 1024, &pty_writer, &mut env)
+            execute_in_pty("echo 'hello world'", 1024, &pty_writer, &env)
                 .expect("failed to execute");
         assert!(output.contains("hello world"));
         assert_eq!(exit_code, Some(0));
@@ -212,9 +216,9 @@ mod tests {
         // command not found
         // bash -c "nonexistent" returns 127 (or non-zero)
         let pty_writer = Arc::new(Mutex::new(None));
-        let mut env = std::env::vars().collect();
+        let env = Arc::new(Mutex::new(std::env::vars().collect()));
         let (_output, exit_code, _output_file) =
-            execute_in_pty("nonexistent_command_123", 1024, &pty_writer, &mut env)
+            execute_in_pty("nonexistent_command_123", 1024, &pty_writer, &env)
                 .expect("failed to execute");
         // exit_code depends on shell, but should be Some(non-zero)
         assert_ne!(exit_code, Some(0));
@@ -226,11 +230,11 @@ mod tests {
         
         // Use very small max_output_size to trigger redirection
         let pty_writer = Arc::new(Mutex::new(None));
-        let mut env = std::env::vars().collect();
+        let env = Arc::new(Mutex::new(std::env::vars().collect()));
         
         // Generate output larger than 5 bytes
         let (output, exit_code, output_file) =
-            execute_in_pty("echo 'This is a longer output'", 5, &pty_writer, &mut env)
+            execute_in_pty("echo 'This is a longer output'", 5, &pty_writer, &env)
                 .expect("failed to execute");
         
         // Should have successful exit

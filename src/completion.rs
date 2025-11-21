@@ -1,12 +1,16 @@
 use reedline::{Completer, Suggestion, Span};
+use std::collections::HashMap;
 use std::path::{Path, MAIN_SEPARATOR};
 use std::fs;
+use std::sync::{Arc, Mutex};
 
-pub struct FileCompleter;
+pub struct FileCompleter {
+    env_vars: Arc<Mutex<HashMap<String, String>>>,
+}
 
 impl FileCompleter {
-    pub fn new() -> Self {
-        Self
+    pub fn new(env_vars: Arc<Mutex<HashMap<String, String>>>) -> Self {
+        Self { env_vars }
     }
 }
 
@@ -14,6 +18,28 @@ impl Completer for FileCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
         let (start, path_str) = find_word_at_pos(line, pos);
         
+        // Check if we're completing a variable (starts with $)
+        if path_str.starts_with('$') {
+            let var_prefix = &path_str[1..]; // Remove the '$'
+            let env = self.env_vars.lock().unwrap();
+            let mut suggestions = Vec::new();
+            
+            for (key, _value) in env.iter() {
+                if key.starts_with(var_prefix) {
+                    suggestions.push(Suggestion {
+                        value: format!("${}", key),
+                        description: None,
+                        extra: None,
+                        span: Span { start, end: pos },
+                        append_whitespace: true,
+                    });
+                }
+            }
+            
+            return suggestions;
+        }
+        
+        // Otherwise, do file completion
         let path = Path::new(path_str);
         
         let (dir, file_name) = if path_str.ends_with(MAIN_SEPARATOR) {
