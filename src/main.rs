@@ -3,7 +3,8 @@ use clap::{Parser, Subcommand};
 use crossterm::terminal;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use reedline::{DefaultPrompt, FileBackedHistory, Reedline, Signal};
-use std::fs::File;
+use std::collections::HashMap;
+use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -158,6 +159,9 @@ fn run_repl(db: db::Database, max_output_size: usize, pty_writer: Arc<Mutex<Opti
     let mut line_editor = Reedline::create().with_history(history);
     let prompt = DefaultPrompt::default();
 
+    // Initialize current environment
+    let mut current_env: HashMap<String, String> = std::env::vars().collect();
+
     loop {
         let sig = line_editor.read_line(&prompt);
         match sig {
@@ -179,13 +183,19 @@ fn run_repl(db: db::Database, max_output_size: usize, pty_writer: Arc<Mutex<Opti
                     } else {
                          // Log cd command as well, though output is empty
                         db.log_entry(input, "", Some(0), 0, None)?;
+                        // Update PWD in current_env
+                        if let Ok(cwd) = std::env::current_dir() {
+                            if let Some(cwd_str) = cwd.to_str() {
+                                current_env.insert("PWD".to_string(), cwd_str.to_string());
+                            }
+                        }
                     }
                     continue;
                 }
 
                 // Execute command
                 let start = Instant::now();
-                match execute_in_pty(input, max_output_size, &pty_writer) {
+                match execute_in_pty(input, max_output_size, &pty_writer, &mut current_env) {
                     Ok((output, exit_code, output_file)) => {
                         let duration = start.elapsed();
                         
@@ -221,7 +231,7 @@ fn run_repl(db: db::Database, max_output_size: usize, pty_writer: Arc<Mutex<Opti
     Ok(())
 }
 
-fn execute_in_pty(command: &str, max_output_size: usize, pty_writer: &Arc<Mutex<Option<Box<dyn Write + Send>>>>) -> Result<(String, Option<i32>, Option<String>)> {
+fn execute_in_pty(command: &str, max_output_size: usize, pty_writer: &Arc<Mutex<Option<Box<dyn Write + Send>>>>, current_env: &mut HashMap<String, String>) -> Result<(String, Option<i32>, Option<String>)> {
     let pty_system = native_pty_system();
 
     // Get terminal size for the PTY to match current term
@@ -236,10 +246,21 @@ fn execute_in_pty(command: &str, max_output_size: usize, pty_writer: &Arc<Mutex<
     // Use the user's shell or default to sh
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".into());
     let mut cmd = CommandBuilder::new(shell);
-    cmd.args(["-c", command]);
+    
+    // Generate unique temporary file path for environment dump
+    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S_%f");
+    let env_dump_path = format!("/tmp/cahier_env_{}", timestamp);
+    
+    // Wrap command with trap to capture environment on exit
+    let wrapped_command = format!(
+        "trap 'env -0 > \"{}\"' EXIT; {}",
+        env_dump_path, command
+    );
+    cmd.args(["-c", &wrapped_command]);
 
-    // Inherit environment variables
-    for (key, value) in std::env::vars() {
+    // Clear and set environment from current_env
+    cmd.env_clear();
+    for (key, value) in current_env.iter() {
         cmd.env(key, value);
     }
     
@@ -334,6 +355,26 @@ fn execute_in_pty(command: &str, max_output_size: usize, pty_writer: &Arc<Mutex<
     let exit_status = child.wait()?;
     let exit_code = if exit_status.success() { Some(0) } else { Some(1) }; 
 
+    // Read and parse the environment dump
+    if let Ok(env_data) = fs::read(&env_dump_path) {
+        // Parse null-terminated environment variables
+        current_env.clear();
+        for entry in env_data.split(|&b| b == 0) {
+            if entry.is_empty() {
+                continue;
+            }
+            if let Ok(s) = std::str::from_utf8(entry) {
+                if let Some(pos) = s.find('=') {
+                    let key = s[..pos].to_string();
+                    let value = s[pos + 1..].to_string();
+                    current_env.insert(key, value);
+                }
+            }
+        }
+        // Clean up the temp file
+        let _ = fs::remove_file(&env_dump_path);
+    }
+
     Ok((String::from_utf8_lossy(&captured_output).to_string(), exit_code, output_filename))
 }
 
@@ -345,7 +386,8 @@ mod tests {
     fn test_execute_in_pty() {
         // simple echo
         let pty_writer = Arc::new(Mutex::new(None));
-        let (output, exit_code, output_file) = execute_in_pty("echo 'hello world'", 1024, &pty_writer).expect("failed to execute");
+        let mut env = std::env::vars().collect();
+        let (output, exit_code, output_file) = execute_in_pty("echo 'hello world'", 1024, &pty_writer, &mut env).expect("failed to execute");
         assert!(output.contains("hello world"));
         assert_eq!(exit_code, Some(0));
         assert!(output_file.is_none());
@@ -356,7 +398,8 @@ mod tests {
         // command not found
         // bash -c "nonexistent" returns 127 (or non-zero)
         let pty_writer = Arc::new(Mutex::new(None));
-        let (_output, exit_code, _output_file) = execute_in_pty("nonexistent_command_123", 1024, &pty_writer).expect("failed to execute");
+        let mut env = std::env::vars().collect();
+        let (_output, exit_code, _output_file) = execute_in_pty("nonexistent_command_123", 1024, &pty_writer, &mut env).expect("failed to execute");
         // exit_code depends on shell, but should be Some(non-zero)
         assert_ne!(exit_code, Some(0));
     }
