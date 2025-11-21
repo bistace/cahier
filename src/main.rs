@@ -3,7 +3,9 @@ use clap::{Parser, Subcommand};
 use crossterm::terminal;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use reedline::{DefaultPrompt, FileBackedHistory, Reedline, Signal};
+use std::fs::File;
 use std::io::{self, Read, Write};
+use std::path::PathBuf;
 use std::time::Instant;
 
 mod db;
@@ -18,7 +20,11 @@ struct Args {
 #[derive(Subcommand)]
 enum Commands {
     /// Start cahier REPL (default)
-    Start,
+    Start {
+        /// Maximum output size in bytes before redirecting to file (default: 16384)
+        #[arg(long, default_value = "16384")]
+        max_output_size: usize,
+    },
     /// Export history to markdown
     Export {
         /// Output file path (default: stdout)
@@ -50,12 +56,12 @@ fn main() -> Result<()> {
             }
             return Ok(());
         }
-        Some(Commands::Start) => {
-            run_repl(db)?;
+        Some(Commands::Start { max_output_size }) => {
+            run_repl(db, max_output_size)?;
         }
         None => {
-            // Default behavior: start REPL
-            run_repl(db)?;
+            // Default behavior: start REPL with default max_output_size
+            run_repl(db, 16384)?;
         }
     }
 
@@ -90,7 +96,10 @@ fn generate_markdown(db: &db::Database) -> Result<String> {
         md.push_str(&format!("$ {}\n", entry.command));
         
         // Output (if present)
-        if !entry.output.is_empty() {
+        if let Some(output_file) = entry.output_file {
+            // Reference the external file
+            md.push_str(&format!("[Output stored in external file: {}]\n", output_file));
+        } else if !entry.output.is_empty() {
             let clean_output = strip_ansi_escapes::strip(&entry.output);
             md.push_str(&String::from_utf8_lossy(&clean_output));
             if !entry.output.ends_with('\n') {
@@ -104,9 +113,10 @@ fn generate_markdown(db: &db::Database) -> Result<String> {
     Ok(md)
 }
 
-fn run_repl(db: db::Database) -> Result<()> {
+fn run_repl(db: db::Database, max_output_size: usize) -> Result<()> {
     println!("Cahier started.");
     println!("Database: ./cahier.db");
+    println!("Max output size: {} bytes", max_output_size);
 
     let history = Box::new(
         FileBackedHistory::with_file(5000, "cahier_history.txt".into())
@@ -136,15 +146,15 @@ fn run_repl(db: db::Database) -> Result<()> {
                     } else {
                          // Log cd command as well, though output is empty
                         let cwd = std::env::current_dir()?.to_string_lossy().to_string();
-                        db.log_entry(input, "", &cwd, Some(0), 0)?;
+                        db.log_entry(input, "", &cwd, Some(0), 0, None)?;
                     }
                     continue;
                 }
 
                 // Execute command
                 let start = Instant::now();
-                match execute_in_pty(input) {
-                    Ok((output, exit_code)) => {
+                match execute_in_pty(input, max_output_size) {
+                    Ok((output, exit_code, output_file)) => {
                         let duration = start.elapsed();
                         let cwd = std::env::current_dir()?.to_string_lossy().to_string();
                         
@@ -155,6 +165,7 @@ fn run_repl(db: db::Database) -> Result<()> {
                             &cwd,
                             exit_code,
                             duration.as_millis(),
+                            output_file.as_deref(),
                         )?;
                     }
                     Err(e) => {
@@ -174,7 +185,7 @@ fn run_repl(db: db::Database) -> Result<()> {
     Ok(())
 }
 
-fn execute_in_pty(command: &str) -> Result<(String, Option<i32>)> {
+fn execute_in_pty(command: &str, max_output_size: usize) -> Result<(String, Option<i32>, Option<String>)> {
     let pty_system = native_pty_system();
 
     // Get terminal size for the PTY to match current term
@@ -208,6 +219,8 @@ fn execute_in_pty(command: &str) -> Result<(String, Option<i32>)> {
     
     let mut buf = [0u8; 1024];
     let mut captured_output = Vec::new();
+    let mut output_file: Option<File> = None;
+    let mut output_filename: Option<String> = None;
     
     // Simple loop to read and print
     loop {
@@ -215,8 +228,44 @@ fn execute_in_pty(command: &str) -> Result<(String, Option<i32>)> {
             Ok(0) => break,
             Ok(n) => {
                 let data = &buf[..n];
-                captured_output.extend_from_slice(data);
-                // Write to stdout directly to show user
+                
+                // Check if we need to redirect to file
+                if captured_output.len() + n > max_output_size && output_file.is_none() {
+                    // Create .cahier/outputs directory
+                    let output_dir = PathBuf::from(".cahier/outputs");
+                    std::fs::create_dir_all(&output_dir)?;
+                    
+                    // Generate unique filename with timestamp
+                    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+                    let filename = format!("output_{}.txt", timestamp);
+                    let filepath = output_dir.join(&filename);
+                    
+                    // Create file and write existing buffer
+                    let mut file = File::create(&filepath)?;
+                    file.write_all(&captured_output)?;
+                    
+                    // Store relative path
+                    output_filename = Some(format!(".cahier/outputs/{}", filename));
+                    output_file = Some(file);
+                    
+                    // Clear captured_output since it's now in the file
+                    captured_output.clear();
+                    
+                    // Add a message to captured_output for display
+                    captured_output.extend_from_slice(
+                        format!("[Output too large, redirected to {}]\n", output_filename.as_ref().unwrap())
+                            .as_bytes()
+                    );
+                }
+                
+                // Write to file if redirected, otherwise accumulate in memory
+                if let Some(ref mut file) = output_file {
+                    file.write_all(data)?;
+                } else {
+                    captured_output.extend_from_slice(data);
+                }
+                
+                // Always write to stdout to show user
                 let _ = io::stdout().write_all(data);
                 let _ = io::stdout().flush();
             }
@@ -227,7 +276,7 @@ fn execute_in_pty(command: &str) -> Result<(String, Option<i32>)> {
     let exit_status = child.wait()?;
     let exit_code = if exit_status.success() { Some(0) } else { Some(1) }; 
 
-    Ok((String::from_utf8_lossy(&captured_output).to_string(), exit_code))
+    Ok((String::from_utf8_lossy(&captured_output).to_string(), exit_code, output_filename))
 }
 
 #[cfg(test)]
@@ -237,16 +286,17 @@ mod tests {
     #[test]
     fn test_execute_in_pty() {
         // simple echo
-        let (output, exit_code) = execute_in_pty("echo 'hello world'").expect("failed to execute");
+        let (output, exit_code, output_file) = execute_in_pty("echo 'hello world'", 1024).expect("failed to execute");
         assert!(output.contains("hello world"));
         assert_eq!(exit_code, Some(0));
+        assert!(output_file.is_none());
     }
 
     #[test]
     fn test_execute_failure() {
         // command not found
         // bash -c "nonexistent" returns 127 (or non-zero)
-        let (_output, exit_code) = execute_in_pty("nonexistent_command_123").expect("failed to execute");
+        let (_output, exit_code, _output_file) = execute_in_pty("nonexistent_command_123", 1024).expect("failed to execute");
         // exit_code depends on shell, but should be Some(non-zero)
         assert_ne!(exit_code, Some(0));
     }

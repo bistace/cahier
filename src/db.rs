@@ -15,6 +15,7 @@ pub struct Entry {
     pub timestamp: DateTime<Utc>,
     pub exit_code: Option<i32>,
     pub duration_ms: i64,
+    pub output_file: Option<String>,
 }
 
 impl Database {
@@ -40,10 +41,23 @@ impl Database {
                 cwd TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
                 exit_code INTEGER,
-                duration_ms INTEGER
+                duration_ms INTEGER,
+                output_file TEXT
             )",
             [],
         )?;
+        
+        // Migrate existing table if output_file column doesn't exist
+        let column_exists: Result<i32, _> = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('entries') WHERE name='output_file'",
+            [],
+            |row| row.get(0),
+        );
+        
+        if let Ok(0) = column_exists {
+            conn.execute("ALTER TABLE entries ADD COLUMN output_file TEXT", [])?;
+        }
+        
         Ok(())
     }
 
@@ -54,18 +68,20 @@ impl Database {
         cwd: &str,
         exit_code: Option<i32>,
         duration_ms: u128,
+        output_file: Option<&str>,
     ) -> Result<()> {
         let timestamp = Utc::now().to_rfc3339();
         self.conn.execute(
-            "INSERT INTO entries (command, output, cwd, timestamp, exit_code, duration_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO entries (command, output, cwd, timestamp, exit_code, duration_ms, output_file)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 command,
                 output,
                 cwd,
                 timestamp,
                 exit_code,
-                duration_ms as i64
+                duration_ms as i64,
+                output_file
             ],
         )?;
         Ok(())
@@ -83,7 +99,7 @@ impl Database {
 
     pub fn get_entries(&self) -> Result<Vec<Entry>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, command, output, cwd, timestamp, exit_code, duration_ms 
+            "SELECT id, command, output, cwd, timestamp, exit_code, duration_ms, output_file 
              FROM entries ORDER BY id ASC"
         )?;
         let entry_iter = stmt.query_map([], |row| {
@@ -95,6 +111,7 @@ impl Database {
                 timestamp: row.get::<_, String>(4)?.parse().unwrap(),
                 exit_code: row.get(5)?,
                 duration_ms: row.get(6)?,
+                output_file: row.get(7)?,
             })
         })?;
 
@@ -114,7 +131,7 @@ mod tests {
     fn test_db_workflow() -> Result<()> {
         let db = Database::init_memory()?;
         
-        db.log_entry("echo hello", "hello", "/tmp", Some(0), 100)?;
+        db.log_entry("echo hello", "hello", "/tmp", Some(0), 100, None)?;
         
         assert_eq!(db.count_entries()?, 1);
         Ok(())
