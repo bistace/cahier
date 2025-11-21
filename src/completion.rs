@@ -76,7 +76,7 @@ fn find_word_at_pos(line: &str, pos: usize) -> (usize, &str) {
             break;
         }
         if c.is_whitespace() {
-            start = i + 1;
+            start = i + c.len_utf8();
         }
     }
     if start > pos {
@@ -108,5 +108,16 @@ mod tests {
         let (start, word) = find_word_at_pos(line, pos);
         assert_eq!(start, 0);
         assert_eq!(word, "command");
+    }
+
+    #[test]
+    fn test_find_word_at_pos_multibyte_whitespace() {
+        // Use non-breaking space (U+00A0), which is 2 bytes in UTF-8
+        let line = format!("ls\u{00A0}/tmp/fi");
+        let pos = line.len();
+        let (start, word) = find_word_at_pos(&line, pos);
+        // "ls" are 2 bytes, NBSP is at byte index 2 and len_utf8() = 2 -> start should be 4
+        assert_eq!(start, 4);
+        assert_eq!(word, "/tmp/fi");
     }
 }
