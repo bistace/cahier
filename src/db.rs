@@ -130,4 +130,100 @@ mod tests {
         assert_eq!(db.count_entries()?, 1);
         Ok(())
     }
+
+    #[test]
+    fn test_get_entries() -> Result<()> {
+        let db = Database::init_memory()?;
+        
+        // Log multiple entries with different data
+        db.log_entry("echo hello", "hello\n", Some(0), 100, None)?;
+        db.log_entry("cat file.txt", "file content", Some(0), 250, None)?;
+        db.log_entry("failing_command", "error output", Some(1), 50, Some(".cahier/outputs/output_123.txt"))?;
+        
+        let entries = db.get_entries()?;
+        
+        assert_eq!(entries.len(), 3);
+        
+        // Verify first entry
+        assert_eq!(entries[0].command, "echo hello");
+        assert_eq!(entries[0].output, "hello\n");
+        assert_eq!(entries[0].exit_code, Some(0));
+        assert_eq!(entries[0].duration_ms, 100);
+        assert_eq!(entries[0].output_file, None);
+        
+        // Verify second entry
+        assert_eq!(entries[1].command, "cat file.txt");
+        assert_eq!(entries[1].output, "file content");
+        assert_eq!(entries[1].exit_code, Some(0));
+        assert_eq!(entries[1].duration_ms, 250);
+        
+        // Verify third entry with output file
+        assert_eq!(entries[2].command, "failing_command");
+        assert_eq!(entries[2].exit_code, Some(1));
+        assert_eq!(entries[2].output_file, Some(".cahier/outputs/output_123.txt".to_string()));
+        
+        Ok(())
+    }
+
+    #[test]
+    fn test_schema_migration() -> Result<()> {
+        // Create a connection with old schema (missing output_file column)
+        let conn = Connection::open_in_memory()?;
+        
+        // Create old schema without output_file column
+        conn.execute(
+            "CREATE TABLE entries (
+                id INTEGER PRIMARY KEY,
+                command TEXT NOT NULL,
+                output TEXT NOT NULL,
+                exit_code INTEGER,
+                duration_ms INTEGER
+            )",
+            [],
+        )?;
+        
+        // Insert data with old schema
+        conn.execute(
+            "INSERT INTO entries (command, output, exit_code, duration_ms)
+             VALUES (?1, ?2, ?3, ?4)",
+            params!["test command", "test output", 0, 100],
+        )?;
+        
+        // Verify column doesn't exist yet
+        let column_count_before: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('entries') WHERE name='output_file'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(column_count_before, 0);
+        
+        // Run migration
+        Database::setup_schema(&conn)?;
+        
+        // Verify column now exists
+        let column_count_after: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('entries') WHERE name='output_file'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(column_count_after, 1);
+        
+        // Verify existing data is preserved
+        let count: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM entries",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 1);
+        
+        // Verify we can query the old data with new schema
+        let command: String = conn.query_row(
+            "SELECT command FROM entries WHERE id=1",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(command, "test command");
+        
+        Ok(())
+    }
 }

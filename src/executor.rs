@@ -219,5 +219,45 @@ mod tests {
         // exit_code depends on shell, but should be Some(non-zero)
         assert_ne!(exit_code, Some(0));
     }
+
+    #[test]
+    fn test_output_redirection() {
+        use std::path::PathBuf;
+        
+        // Use very small max_output_size to trigger redirection
+        let pty_writer = Arc::new(Mutex::new(None));
+        let mut env = std::env::vars().collect();
+        
+        // Generate output larger than 5 bytes
+        let (output, exit_code, output_file) =
+            execute_in_pty("echo 'This is a longer output'", 5, &pty_writer, &mut env)
+                .expect("failed to execute");
+        
+        // Should have successful exit
+        assert_eq!(exit_code, Some(0));
+        
+        // Output should contain the redirection message
+        assert!(output.contains("[Output too large, redirected to"));
+        
+        // Should have an output file path
+        assert!(output_file.is_some());
+        
+        let file_path = output_file.unwrap();
+        assert!(file_path.starts_with(".cahier/outputs/"));
+        assert!(file_path.ends_with(".txt"));
+        
+        // Verify the file exists and contains the actual output
+        let full_path = PathBuf::from(&file_path);
+        assert!(full_path.exists(), "Output file should exist: {:?}", full_path);
+        
+        let file_content = std::fs::read_to_string(&full_path)
+            .expect("Should be able to read output file");
+        assert!(file_content.contains("This is a longer output"));
+        
+        // Cleanup: remove the output file and directory
+        std::fs::remove_file(&full_path).ok();
+        // Try to remove the directory (will only succeed if empty)
+        std::fs::remove_dir_all(".cahier").ok();
+    }
 }
 
