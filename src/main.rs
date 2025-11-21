@@ -79,25 +79,26 @@ fn generate_markdown(db: &db::Database) -> Result<String> {
     md.push_str("# Cahier Export\n\n");
     
     for entry in entries {
-        md.push_str(&format!("### `{}`\n", entry.cwd));
+        // Format: everything inside a single bash block
         md.push_str("```bash\n");
-        md.push_str(&format!("$ {}\n", entry.command));
-        md.push_str("```\n\n");
         
+        // Status line: (exit_code - duration)
+        let exit_code_str = entry.exit_code.map_or("?".to_string(), |c| c.to_string());
+        md.push_str(&format!("({} - {}ms)\n", exit_code_str, entry.duration_ms));
+        
+        // Command line with $ prefix
+        md.push_str(&format!("$ {}\n", entry.command));
+        
+        // Output (if present)
         if !entry.output.is_empty() {
-            md.push_str("```\n");
-            // Clean up output? For now, just raw.
-            // Stripping ANSI codes might be good here for readability in markdown viewers.
             let clean_output = strip_ansi_escapes::strip(&entry.output);
             md.push_str(&String::from_utf8_lossy(&clean_output));
-            md.push_str("\n```\n\n");
+            if !entry.output.ends_with('\n') {
+                md.push_str("\n");
+            }
         }
         
-        md.push_str(&format!("*Time: {} | Exit Code: {:?} | Duration: {}ms*\n\n---\n\n", 
-            entry.timestamp.format("%H:%M:%S"), 
-            entry.exit_code, 
-            entry.duration_ms
-        ));
+        md.push_str("```\n\n");
     }
     
     Ok(md)
