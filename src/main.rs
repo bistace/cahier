@@ -178,8 +178,7 @@ fn run_repl(db: db::Database, max_output_size: usize, pty_writer: Arc<Mutex<Opti
                         eprintln!("Error changing directory: {}", e);
                     } else {
                          // Log cd command as well, though output is empty
-                        let cwd = std::env::current_dir()?.to_string_lossy().to_string();
-                        db.log_entry(input, "", &cwd, Some(0), 0, None)?;
+                        db.log_entry(input, "", Some(0), 0, None)?;
                     }
                     continue;
                 }
@@ -189,13 +188,11 @@ fn run_repl(db: db::Database, max_output_size: usize, pty_writer: Arc<Mutex<Opti
                 match execute_in_pty(input, max_output_size, &pty_writer) {
                     Ok((output, exit_code, output_file)) => {
                         let duration = start.elapsed();
-                        let cwd = std::env::current_dir()?.to_string_lossy().to_string();
                         
                         // Save to DB
                         db.log_entry(
                             input,
                             &output,
-                            &cwd,
                             exit_code,
                             duration.as_millis(),
                             output_file.as_deref(),

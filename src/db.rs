@@ -1,5 +1,4 @@
 use anyhow::Result;
-use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 
 pub struct Database {
@@ -11,8 +10,6 @@ pub struct Entry {
     pub id: i64,
     pub command: String,
     pub output: String,
-    pub cwd: String,
-    pub timestamp: DateTime<Utc>,
     pub exit_code: Option<i32>,
     pub duration_ms: i64,
     pub output_file: Option<String>,
@@ -38,8 +35,6 @@ impl Database {
                 id INTEGER PRIMARY KEY,
                 command TEXT NOT NULL,
                 output TEXT NOT NULL,
-                cwd TEXT NOT NULL,
-                timestamp TEXT NOT NULL,
                 exit_code INTEGER,
                 duration_ms INTEGER,
                 output_file TEXT
@@ -57,6 +52,11 @@ impl Database {
         if let Ok(0) = column_exists {
             conn.execute("ALTER TABLE entries ADD COLUMN output_file TEXT", [])?;
         }
+
+        // Attempt to drop legacy columns if they exist (SQLite 3.35.0+)
+        // We ignore errors because they might not exist or SQLite version might be old
+        let _ = conn.execute("ALTER TABLE entries DROP COLUMN cwd", []);
+        let _ = conn.execute("ALTER TABLE entries DROP COLUMN timestamp", []);
         
         Ok(())
     }
@@ -65,20 +65,16 @@ impl Database {
         &self,
         command: &str,
         output: &str,
-        cwd: &str,
         exit_code: Option<i32>,
         duration_ms: u128,
         output_file: Option<&str>,
     ) -> Result<()> {
-        let timestamp = Utc::now().to_rfc3339();
         self.conn.execute(
-            "INSERT INTO entries (command, output, cwd, timestamp, exit_code, duration_ms, output_file)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO entries (command, output, exit_code, duration_ms, output_file)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 command,
                 output,
-                cwd,
-                timestamp,
                 exit_code,
                 duration_ms as i64,
                 output_file
@@ -99,7 +95,7 @@ impl Database {
 
     pub fn get_entries(&self) -> Result<Vec<Entry>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, command, output, cwd, timestamp, exit_code, duration_ms, output_file 
+            "SELECT id, command, output, exit_code, duration_ms, output_file 
              FROM entries ORDER BY id ASC"
         )?;
         let entry_iter = stmt.query_map([], |row| {
@@ -107,11 +103,9 @@ impl Database {
                 id: row.get(0)?,
                 command: row.get(1)?,
                 output: row.get(2)?,
-                cwd: row.get(3)?,
-                timestamp: row.get::<_, String>(4)?.parse().unwrap(),
-                exit_code: row.get(5)?,
-                duration_ms: row.get(6)?,
-                output_file: row.get(7)?,
+                exit_code: row.get(3)?,
+                duration_ms: row.get(4)?,
+                output_file: row.get(5)?,
             })
         })?;
 
@@ -131,7 +125,7 @@ mod tests {
     fn test_db_workflow() -> Result<()> {
         let db = Database::init_memory()?;
         
-        db.log_entry("echo hello", "hello", "/tmp", Some(0), 100, None)?;
+        db.log_entry("echo hello", "hello", Some(0), 100, None)?;
         
         assert_eq!(db.count_entries()?, 1);
         Ok(())
