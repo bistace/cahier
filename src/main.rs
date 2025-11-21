@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use crossterm::terminal;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use reedline::{DefaultPrompt, FileBackedHistory, Reedline, Signal};
@@ -11,15 +11,107 @@ mod db;
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Optional name for this session
+    #[command(subcommand)]
+    command: Option<Commands>,
+    
+    /// Optional name for this session (used when starting default mode)
     #[arg(short, long)]
     session: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Start a new cahier session (default)
+    Start {
+        #[arg(short, long)]
+        session: Option<String>,
+    },
+    /// Export a session to markdown
+    Export {
+        /// The ID of the session to export (defaults to latest)
+        #[arg(short, long)]
+        id: Option<i64>,
+        
+        /// Output file path (default: stdout)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// List all sessions
+    List,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
     let db = db::Database::init("cahier.db")?;
-    let session_id = db.create_session(args.session)?;
+
+    match args.command {
+        Some(Commands::Export { id, output }) => {
+            let session_id = match id {
+                Some(id) => id,
+                None => db.get_last_session_id()?.ok_or_else(|| anyhow::anyhow!("No sessions found"))?,
+            };
+            
+            let markdown = generate_markdown(&db, session_id)?;
+            
+            if let Some(path) = output {
+                std::fs::write(path, markdown)?;
+            } else {
+                println!("{}", markdown);
+            }
+            return Ok(());
+        }
+        Some(Commands::List) => {
+            let sessions = db.list_sessions()?;
+            println!("{:<5} | {:<25} | {}", "ID", "Start Time", "Name");
+            println!("{:-<5} | {:-<25} | {:-<20}", "", "", "");
+            for s in sessions {
+                println!("{:<5} | {:<25} | {}", s.id, s.start_time, s.name.unwrap_or_default());
+            }
+            return Ok(());
+        }
+        Some(Commands::Start { session }) => {
+            run_repl(db, session)?;
+        }
+        None => {
+            // Default behavior: start REPL
+            run_repl(db, args.session)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn generate_markdown(db: &db::Database, session_id: i64) -> Result<String> {
+    let session = db.get_session(session_id)?;
+    let entries = db.get_entries(session_id)?;
+    
+    let mut md = String::new();
+    md.push_str(&format!("# Cahier Session: {}\n\n", session.name.unwrap_or_else(|| format!("Session {}", session_id))));
+    md.push_str(&format!("**Date:** {}\n\n", session.start_time));
+    
+    for entry in entries {
+        md.push_str(&format!("### `{}`\n", entry.cwd));
+        md.push_str("```bash\n");
+        md.push_str(&format!("$ {}\n", entry.command));
+        md.push_str("```\n\n");
+        
+        if !entry.output.is_empty() {
+            md.push_str("```\n");
+            // Clean up output? For now, just raw.
+            // Stripping ANSI codes might be good here for readability in markdown viewers.
+            let clean_output = strip_ansi_escapes::strip(&entry.output);
+            md.push_str(&String::from_utf8_lossy(&clean_output));
+            md.push_str("\n```\n\n");
+        }
+        
+        md.push_str(&format!("*Exit Code: {:?} | Duration: {}ms*\n\n---\n\n", entry.exit_code, entry.duration_ms));
+    }
+    
+    Ok(md)
+}
+
+fn run_repl(db: db::Database, session_name: Option<String>) -> Result<()> {
+    let session_id = db.create_session(session_name)?;
 
     println!("Cahier session started. (Session ID: {})", session_id);
     println!("Database: ./cahier.db");
@@ -88,7 +180,6 @@ fn main() -> Result<()> {
             }
         }
     }
-
     Ok(())
 }
 

@@ -13,6 +13,16 @@ pub struct Session {
     pub name: Option<String>,
 }
 
+pub struct Entry {
+    pub id: i64,
+    pub command: String,
+    pub output: String,
+    pub cwd: String,
+    pub timestamp: DateTime<Utc>,
+    pub exit_code: Option<i32>,
+    pub duration_ms: i64,
+}
+
 impl Database {
     pub fn init(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
@@ -97,6 +107,69 @@ impl Database {
             |row| row.get(0),
         )?;
         Ok(count)
+    }
+
+    pub fn list_sessions(&self) -> Result<Vec<Session>> {
+        let mut stmt = self.conn.prepare("SELECT id, start_time, name FROM sessions ORDER BY id DESC")?;
+        let session_iter = stmt.query_map([], |row| {
+            Ok(Session {
+                id: row.get(0)?,
+                start_time: row.get::<_, String>(1)?.parse().unwrap(), // Assuming valid date
+                name: row.get(2)?,
+            })
+        })?;
+
+        let mut sessions = Vec::new();
+        for session in session_iter {
+            sessions.push(session?);
+        }
+        Ok(sessions)
+    }
+
+    pub fn get_last_session_id(&self) -> Result<Option<i64>> {
+        let mut stmt = self.conn.prepare("SELECT id FROM sessions ORDER BY id DESC LIMIT 1")?;
+        let mut rows = stmt.query([])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn get_session(&self, id: i64) -> Result<Session> {
+        let mut stmt = self.conn.prepare("SELECT id, start_time, name FROM sessions WHERE id = ?1")?;
+        let session = stmt.query_row(params![id], |row| {
+            Ok(Session {
+                id: row.get(0)?,
+                start_time: row.get::<_, String>(1)?.parse().unwrap(),
+                name: row.get(2)?,
+            })
+        })?;
+        Ok(session)
+    }
+
+    pub fn get_entries(&self, session_id: i64) -> Result<Vec<Entry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, command, output, cwd, timestamp, exit_code, duration_ms 
+             FROM entries WHERE session_id = ?1 ORDER BY id ASC"
+        )?;
+        let entry_iter = stmt.query_map(params![session_id], |row| {
+            Ok(Entry {
+                id: row.get(0)?,
+                command: row.get(1)?,
+                output: row.get(2)?,
+                cwd: row.get(3)?,
+                timestamp: row.get::<_, String>(4)?.parse().unwrap(),
+                exit_code: row.get(5)?,
+                duration_ms: row.get(6)?,
+            })
+        })?;
+
+        let mut entries = Vec::new();
+        for entry in entry_iter {
+            entries.push(entry?);
+        }
+        Ok(entries)
     }
 }
 
