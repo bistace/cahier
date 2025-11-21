@@ -357,8 +357,8 @@ fn execute_in_pty(command: &str, max_output_size: usize, pty_writer: &Arc<Mutex<
 
     // Read and parse the environment dump
     if let Ok(env_data) = fs::read(&env_dump_path) {
-        // Parse null-terminated environment variables
-        current_env.clear();
+        // Parse null-terminated environment variables into a temporary HashMap
+        let mut new_env = HashMap::new();
         for entry in env_data.split(|&b| b == 0) {
             if entry.is_empty() {
                 continue;
@@ -367,10 +367,17 @@ fn execute_in_pty(command: &str, max_output_size: usize, pty_writer: &Arc<Mutex<
                 if let Some(pos) = s.find('=') {
                     let key = s[..pos].to_string();
                     let value = s[pos + 1..].to_string();
-                    current_env.insert(key, value);
+                    new_env.insert(key, value);
                 }
             }
         }
+        
+        // Only update current_env if we successfully parsed at least some variables
+        // This prevents losing all environment variables if the dump is empty or invalid
+        if !new_env.is_empty() {
+            *current_env = new_env;
+        }
+        
         // Clean up the temp file
         let _ = fs::remove_file(&env_dump_path);
     }
