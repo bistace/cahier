@@ -1,7 +1,6 @@
 use anyhow::Result;
-use cahier::{db, executor};
+use cahier::executor;
 use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
 
 #[test]
 fn test_executor_simple_command() -> Result<()> {

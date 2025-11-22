@@ -74,7 +74,7 @@ pub fn run_repl(
 
                 // Check for built-in commands
                 let args: Vec<&str> = input.split_whitespace().collect();
-                if let Some(cmd_name) = args.get(0) {
+                if let Some(cmd_name) = args.first() {
                     if let Some(cmd) = registry.get(cmd_name) {
                         let mut context = CommandContext {
                             db: &db,

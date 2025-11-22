@@ -9,6 +9,12 @@ pub struct CahierPrompt {
     last_duration: Option<Duration>,
 }
 
+impl Default for CahierPrompt {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CahierPrompt {
     pub fn new() -> Self {
         Self { 

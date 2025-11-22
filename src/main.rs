@@ -71,9 +71,12 @@ fn main() -> Result<()> {
     }
 }
 
+
+type PtyWriter = Arc<Mutex<Option<Box<dyn Write + Send>>>>;
+
 /// Sets up the Ctrl+C signal handler and returns the shared PTY writer
-fn setup_signal_handler() -> Result<Arc<Mutex<Option<Box<dyn Write + Send>>>>> {
-    let pty_writer: Arc<Mutex<Option<Box<dyn Write + Send>>>> = Arc::new(Mutex::new(None));
+fn setup_signal_handler() -> Result<PtyWriter> {
+    let pty_writer: PtyWriter = Arc::new(Mutex::new(None));
 
     let writer_clone = Arc::clone(&pty_writer);
     ctrlc::set_handler(move || {

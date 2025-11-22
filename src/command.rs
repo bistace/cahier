@@ -31,6 +31,12 @@ pub struct Registry {
     commands: HashMap<String, Box<dyn Command>>,
 }
 
+impl Default for Registry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Registry {
     pub fn new() -> Self {
         Self {
@@ -42,8 +48,8 @@ impl Registry {
         self.commands.insert(cmd.name().to_string(), cmd);
     }
     
-    pub fn get(&self, name: &str) -> Option<&Box<dyn Command>> {
-        self.commands.get(name)
+    pub fn get(&self, name: &str) -> Option<&dyn Command> {
+        self.commands.get(name).map(|b| b.as_ref())
     }
 }
 

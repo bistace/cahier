@@ -42,7 +42,7 @@ pub fn generate_markdown(db: &db::Database) -> Result<String> {
             let clean_output = strip_ansi_escapes::strip(&entry.output);
             md.push_str(&String::from_utf8_lossy(&clean_output));
             if !entry.output.ends_with('\n') {
-                md.push_str("\n");
+                md.push('\n');
             }
         }
 

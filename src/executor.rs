@@ -192,20 +192,27 @@ pub enum ExecutionResult {
     Suspended(Job),
 }
 
-/// Monitors the execution of a PTY process (handles I/O and waiting)
-fn monitor_execution(
+struct MonitorConfig {
     command: String,
-    mut child: Box<dyn Child + Send + Sync>,
-    master: Box<dyn MasterPty + Send>,
     env_dump_path: PathBuf,
     max_output_size: usize,
-    pty_writer: &Arc<Mutex<Option<Box<dyn Write + Send>>>>,
-    current_env: &Arc<Mutex<HashMap<String, String>>>,
     capture_output: bool,
     existing_writer: Option<Box<dyn Write + Send>>,
+}
+
+/// Monitors the execution of a PTY process (handles I/O and waiting)
+fn monitor_execution(
+    child: Box<dyn Child + Send + Sync>,
+    master: Box<dyn MasterPty + Send>,
+    pty_writer: &Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    current_env: &Arc<Mutex<HashMap<String, String>>>,
+    config: MonitorConfig,
 ) -> Result<ExecutionResult> {
+    #[cfg(not(unix))]
+    let mut child = child;
+
     // Register the writer for Ctrl+C handling
-    let writer = if let Some(w) = existing_writer {
+    let writer = if let Some(w) = config.existing_writer {
         w
     } else {
         master.take_writer()?
@@ -271,10 +278,10 @@ fn monitor_execution(
     });
 
     let mut buf = [0u8; 1024];
-    let mut output_handler = OutputHandler::new(max_output_size, capture_output);
+    let mut output_handler = OutputHandler::new(config.max_output_size, config.capture_output);
 
     // Ensure env dump file is cleaned up
-    let _env_dump_guard = EnvDumpGuard(env_dump_path.clone());
+    let _env_dump_guard = EnvDumpGuard(config.env_dump_path.clone());
 
     let mut exit_code = None;
     let mut suspended = false;
@@ -411,16 +418,16 @@ fn monitor_execution(
     if suspended {
         return Ok(ExecutionResult::Suspended(Job {
             id: 0, // ID assigned by caller
-            command,
+            command: config.command,
             child,
             master,
             writer: retrieved_writer,
-            env_dump_path,
+            env_dump_path: config.env_dump_path,
         }));
     }
 
     // Read and parse the environment dump
-    if let Ok(env_data) = fs::read(&env_dump_path) {
+    if let Ok(env_data) = fs::read(&config.env_dump_path) {
         // Parse null-terminated environment variables into a temporary HashMap
         let mut new_env = HashMap::new();
         for entry in env_data.split(|&b| b == 0) {
@@ -508,15 +515,17 @@ pub fn execute_in_pty(
     drop(pair.slave);
 
     monitor_execution(
-        command.to_string(),
         child,
         pair.master,
-        env_dump_path,
-        max_output_size,
         pty_writer,
         current_env,
-        capture_output,
-        None,
+        MonitorConfig {
+            command: command.to_string(),
+            env_dump_path,
+            max_output_size,
+            capture_output,
+            existing_writer: None,
+        },
     )
 }
 
@@ -554,15 +563,17 @@ pub fn resume_job(
     }
 
     monitor_execution(
-        job.command,
         job.child,
         job.master,
-        job.env_dump_path,
-        max_output_size,
         pty_writer,
         current_env,
-        false, // Don't capture output on resume
-        job.writer,
+        MonitorConfig {
+            command: job.command,
+            env_dump_path: job.env_dump_path,
+            max_output_size,
+            capture_output: false, // Don't capture output on resume
+            existing_writer: job.writer,
+        },
     )
 }
 

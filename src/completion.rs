@@ -19,8 +19,8 @@ impl Completer for FileCompleter {
         let (start, path_str) = find_word_at_pos(line, pos);
         
         // Check if we're completing a variable (starts with $)
-        if path_str.starts_with('$') {
-            let var_prefix = &path_str[1..]; // Remove the '$'
+        if let Some(var_prefix) = path_str.strip_prefix('$') {
+            // Remove the '$'
             let env = self.env_vars.lock().unwrap();
             let mut suggestions = Vec::new();
             

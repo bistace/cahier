@@ -1,4 +1,4 @@
-/// Constants shared across the application
+//! Constants shared across the application
 
 /// Main directory for cahier files
 pub const CAHIER_DIR: &str = "cahier_logs";
