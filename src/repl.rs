@@ -89,6 +89,8 @@ pub fn run_repl(
                     break;
                 }
 
+                let start_total = Instant::now();
+
                 // Handle 'cd' manually
                 if input.starts_with("cd ") {
                     let path = input.strip_prefix("cd ").unwrap().trim();
@@ -100,6 +102,7 @@ pub fn run_repl(
                         db.log_entry(input, "", Some(0), 0, None)?;
                         prompt.set_last_success(true);
                     }
+                    prompt.set_last_duration(Some(start_total.elapsed()));
                     continue;
                 }
 
@@ -109,6 +112,7 @@ pub fn run_repl(
                         println!("[{}] {} {}", i + 1, job.command, if i == jobs.len() - 1 { "+" } else { "" });
                     }
                     prompt.set_last_success(true);
+                    prompt.set_last_duration(Some(start_total.elapsed()));
                     continue;
                 }
 
@@ -117,6 +121,7 @@ pub fn run_repl(
                     if jobs.is_empty() {
                         eprintln!("fg: current: no such job");
                         prompt.set_last_success(false);
+                        prompt.set_last_duration(None);
                         continue;
                     }
 
@@ -130,11 +135,13 @@ pub fn run_repl(
                              } else {
                                  eprintln!("fg: {}: no such job", arg);
                                  prompt.set_last_success(false);
+                                 prompt.set_last_duration(None);
                                  continue;
                              }
                         } else {
                             eprintln!("fg: invalid job specifier");
                             prompt.set_last_success(false);
+                            prompt.set_last_duration(None);
                             continue;
                         }
                     };
@@ -151,6 +158,7 @@ pub fn run_repl(
                         Err(e) => {
                             eprintln!("Error resuming job: {}", e);
                             prompt.set_last_success(false);
+                            prompt.set_last_duration(Some(start.elapsed()));
                         }
                     }
                     continue;
@@ -170,21 +178,22 @@ pub fn run_repl(
                          if let Err(e) = handle_execution_result(res, start, input, &db, &mut jobs, &mut prompt) {
                              eprintln!("Error processing execution result: {}", e);
                              prompt.set_last_success(false);
+                             // Note: handle_execution_result already sets duration if successful, but we should handle error case
+                             prompt.set_last_duration(Some(start.elapsed()));
                          }
                     }
                     Err(e) => {
                         eprintln!("Execution error: {}", e);
                         prompt.set_last_success(false);
+                        prompt.set_last_duration(Some(start.elapsed()));
                     }
                 }
             }
             Ok(Signal::CtrlC) => {
                 // Handle Ctrl+C at prompt - just continue to next prompt
                 println!("^C");
-                // Ctrl+C at prompt is usually considered "abort", so maybe red?
-                // But user didn't run a failing command. Let's keep previous status or default to false?
-                // Bash keeps it 130 usually. Let's set to false for visual feedback of "aborted".
                 prompt.set_last_success(false);
+                prompt.set_last_duration(None);
                 continue;
             }
             Ok(Signal::CtrlD) => {
@@ -224,6 +233,7 @@ fn handle_execution_result(
             } else {
                 prompt.set_last_success(false);
             }
+            prompt.set_last_duration(Some(duration));
         }
         ExecutionResult::Suspended(mut job) => {
              let id = jobs.len() + 1;
@@ -231,6 +241,7 @@ fn handle_execution_result(
              println!("\n[{}] Stopped  {}", id, job.command);
              jobs.push(job);
              prompt.set_last_success(true);
+             prompt.set_last_duration(Some(start_time.elapsed()));
         }
     }
     Ok(())
