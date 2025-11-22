@@ -11,7 +11,7 @@ mod executor;
 mod export;
 mod repl;
 
-use common::{DB_FILENAME, DEFAULT_MAX_OUTPUT_SIZE};
+use common::{DB_FILENAME, DEFAULT_MAX_OUTPUT_SIZE, CAHIER_DIR};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -41,6 +41,9 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    // Ensure cahier directory exists
+    std::fs::create_dir_all(CAHIER_DIR)?;
+
     let args = Args::parse();
     let db = db::Database::init(DB_FILENAME)?;
     let config = config::Config::load()?;

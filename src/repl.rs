@@ -5,7 +5,7 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use crate::common::{HISTORY_FILENAME, MAX_HISTORY_ENTRIES};
+use crate::common::{HISTORY_FILENAME, MAX_HISTORY_ENTRIES, DB_FILENAME};
 use crate::completion::FileCompleter;
 use crate::config::Config;
 use crate::db;
@@ -46,7 +46,7 @@ pub fn run_repl(
     config: Config,
 ) -> Result<()> {
     println!("Cahier started.");
-    println!("Database: ./cahier.db");
+    println!("Database: ./{}", DB_FILENAME);
     println!("Max output size: {} bytes", max_output_size);
 
     let history = Box::new(
