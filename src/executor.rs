@@ -6,8 +6,60 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::os::unix::io::AsRawFd;
 
 use crate::common::OUTPUT_DIR;
+
+/// RAII guard that ensures raw mode is disabled when dropped
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn new() -> Result<Self> {
+        terminal::enable_raw_mode()?;
+        Ok(RawModeGuard)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = terminal::disable_raw_mode();
+    }
+}
+
+/// Helper for non-blocking stdin
+struct NonBlockingStdinGuard {
+    fd: i32,
+    orig_flags: i32,
+}
+
+impl NonBlockingStdinGuard {
+    fn new() -> Result<Self> {
+        let fd = std::io::stdin().as_raw_fd();
+        let orig_flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if orig_flags < 0 {
+            return Err(anyhow::anyhow!("Failed to get stdin flags"));
+        }
+        
+        let res = unsafe { libc::fcntl(fd, libc::F_SETFL, orig_flags | libc::O_NONBLOCK) };
+        if res < 0 {
+            return Err(anyhow::anyhow!("Failed to set stdin to non-blocking"));
+        }
+
+        Ok(Self { fd, orig_flags })
+    }
+}
+
+impl Drop for NonBlockingStdinGuard {
+    fn drop(&mut self) {
+        unsafe {
+            if libc::fcntl(self.fd, libc::F_SETFL, self.orig_flags) < 0 {
+                eprintln!("Failed to restore stdin flags");
+            }
+        }
+    }
+}
 
 /// Executes a command in a PTY environment, capturing output and handling signals.
 ///
@@ -93,6 +145,58 @@ pub fn execute_in_pty(
 
     let mut reader = pair.master.try_clone_reader()?;
 
+    // Enable raw mode to forward all keystrokes (including Ctrl+X, etc.) to the child
+    let _raw_mode_guard = RawModeGuard::new()?;
+
+    // Flag to signal input thread to stop
+    let finished = Arc::new(AtomicBool::new(false));
+    let finished_clone = finished.clone();
+
+    // Spawn a thread to forward stdin to the PTY master
+    let pty_writer_clone = Arc::clone(pty_writer);
+    let input_thread = thread::spawn(move || {
+        // Set stdin to non-blocking mode
+        let _nonblocking_guard = match NonBlockingStdinGuard::new() {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("Failed to set stdin non-blocking: {}", e);
+                return;
+            }
+        };
+
+        let mut stdin = io::stdin();
+        let mut buf = [0u8; 1024];
+        loop {
+            if finished_clone.load(Ordering::Relaxed) {
+                break;
+            }
+
+            match stdin.read(&mut buf) {
+                Ok(0) => break, // EOF
+                Ok(n) => {
+                    // Write to the PTY master
+                    if let Ok(mut writer_opt) = pty_writer_clone.lock() {
+                        if let Some(writer) = writer_opt.as_mut() {
+                            if writer.write_all(&buf[..n]).is_err() {
+                                break; // PTY closed
+                            }
+                            let _ = writer.flush();
+                        } else {
+                            break; // No writer available
+                        }
+                    } else {
+                        break; // Lock failed
+                    }
+                }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    // No data available, sleep briefly to avoid busy loop
+                    thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(_) => break, // Read error
+            }
+        }
+    });
+
     let mut buf = [0u8; 1024];
     let mut captured_output = Vec::new();
     let mut output_file: Option<File> = None;
@@ -158,6 +262,13 @@ pub fn execute_in_pty(
     } else {
         Some(1)
     };
+
+    // Signal input thread to stop
+    finished.store(true, Ordering::Relaxed);
+
+    // The input thread will stop naturally when it sees the flag or writer is cleared.
+    // We give it a moment to finish gracefully, but don't wait indefinitely.
+    let _ = input_thread.join();
 
     // Read and parse the environment dump
     if let Ok(env_data) = fs::read(&env_dump_path) {

@@ -130,6 +130,7 @@ dependencies = [
  "clap",
  "crossterm",
  "ctrlc",
+ "libc",
  "portable-pty",
  "reedline",
  "rusqlite",
