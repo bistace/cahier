@@ -99,7 +99,9 @@ pub fn run_repl(
                         prompt.set_last_success(false);
                     } else {
                         // Log cd command as well, though output is empty
-                        db.log_entry(input, "", Some(0), 0, None)?;
+                        if let Err(e) = db.log_entry(input, "", Some(0), 0, None) {
+                            eprintln!("Error logging cd command: {}", e);
+                        }
                         prompt.set_last_success(true);
                     }
                     prompt.set_last_duration(Some(start_total.elapsed()));
@@ -121,7 +123,7 @@ pub fn run_repl(
                     if jobs.is_empty() {
                         eprintln!("fg: current: no such job");
                         prompt.set_last_success(false);
-                        prompt.set_last_duration(None);
+                        prompt.set_last_duration(Some(start_total.elapsed()));
                         continue;
                     }
 
@@ -135,13 +137,13 @@ pub fn run_repl(
                              } else {
                                  eprintln!("fg: {}: no such job", arg);
                                  prompt.set_last_success(false);
-                                 prompt.set_last_duration(None);
+                                 prompt.set_last_duration(Some(start_total.elapsed()));
                                  continue;
                              }
                         } else {
                             eprintln!("fg: invalid job specifier");
                             prompt.set_last_success(false);
-                            prompt.set_last_duration(None);
+                            prompt.set_last_duration(Some(start_total.elapsed()));
                             continue;
                         }
                     };
@@ -220,13 +222,16 @@ fn handle_execution_result(
     match res {
         ExecutionResult::Completed { output, exit_code, output_file } => {
             let duration = start_time.elapsed();
-            db.log_entry(
+            // Log error instead of propagating it to avoid crashing the REPL
+            if let Err(e) = db.log_entry(
                 input,
                 &output,
                 exit_code,
                 duration.as_millis(),
                 output_file.as_deref(),
-            )?;
+            ) {
+                eprintln!("Error logging command: {}", e);
+            }
             
             if let Some(code) = exit_code {
                 prompt.set_last_success(code == 0);
