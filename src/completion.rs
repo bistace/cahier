@@ -1,6 +1,6 @@
 use reedline::{Completer, Suggestion, Span};
 use std::collections::HashMap;
-use std::path::{Path, MAIN_SEPARATOR};
+use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 use std::fs;
 use std::sync::{Arc, Mutex};
 
@@ -12,31 +12,63 @@ impl FileCompleter {
     pub fn new(env_vars: Arc<Mutex<HashMap<String, String>>>) -> Self {
         Self { env_vars }
     }
+
+    fn expand_path(&self, path_str: &str) -> PathBuf {
+        // Handle tilde expansion
+        if let Some(stripped) = path_str.strip_prefix('~') {
+            if stripped.is_empty() || stripped.starts_with(MAIN_SEPARATOR) {
+                if let Some(home) = dirs::home_dir() {
+                    return home.join(stripped.trim_start_matches(MAIN_SEPARATOR));
+                }
+            }
+        }
+
+        // Handle variable expansion
+        if let Some(stripped) = path_str.strip_prefix('$') {
+            if let Some(idx) = stripped.find(MAIN_SEPARATOR) {
+                let var = &stripped[..idx];
+                let rest = &stripped[idx..];
+                let env = self.env_vars.lock().unwrap();
+                if let Some(val) = env.get(var) {
+                    return PathBuf::from(val).join(rest.trim_start_matches(MAIN_SEPARATOR));
+                }
+            } else {
+                let env = self.env_vars.lock().unwrap();
+                if let Some(val) = env.get(stripped) {
+                    return PathBuf::from(val);
+                }
+            }
+        }
+
+        PathBuf::from(path_str)
+    }
 }
 
 impl Completer for FileCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
         let (start, path_str) = find_word_at_pos(line, pos);
         
-        // Check if we're completing a variable (starts with $)
-        if let Some(var_prefix) = path_str.strip_prefix('$') {
-            // Remove the '$'
-            let env = self.env_vars.lock().unwrap();
-            let mut suggestions = Vec::new();
-            
-            for (key, _value) in env.iter() {
-                if key.starts_with(var_prefix) {
-                    suggestions.push(Suggestion {
-                        value: format!("${}", key),
-                        description: None,
-                        extra: None,
-                        span: Span { start, end: pos },
-                        append_whitespace: true,
-                    });
+        // Check if we're completing a variable (starts with $ and has no separator)
+        if path_str.starts_with('$') && !path_str.contains(MAIN_SEPARATOR) {
+            if let Some(var_prefix) = path_str.strip_prefix('$') {
+                // Remove the '$'
+                let env = self.env_vars.lock().unwrap();
+                let mut suggestions = Vec::new();
+                
+                for (key, _value) in env.iter() {
+                    if key.starts_with(var_prefix) {
+                        suggestions.push(Suggestion {
+                            value: format!("${}", key),
+                            description: None,
+                            extra: None,
+                            span: Span { start, end: pos },
+                            append_whitespace: true,
+                        });
+                    }
                 }
+                
+                return suggestions;
             }
-            
-            return suggestions;
         }
         
         // Otherwise, do file completion
@@ -51,7 +83,10 @@ impl Completer for FileCompleter {
             }
         };
         
-        let read_dir = match fs::read_dir(dir) {
+        // Expand directory for searching, but keep original `dir` for suggestions
+        let search_dir = self.expand_path(dir.to_str().unwrap_or(""));
+
+        let read_dir = match fs::read_dir(search_dir) {
             Ok(d) => d,
             Err(_) => return vec![],
         };
