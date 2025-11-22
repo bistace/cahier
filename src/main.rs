@@ -9,6 +9,7 @@ mod config;
 mod db;
 mod executor;
 mod export;
+mod prompt;
 mod repl;
 
 use common::{DB_FILENAME, DEFAULT_MAX_OUTPUT_SIZE, CAHIER_DIR};

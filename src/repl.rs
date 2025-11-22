@@ -1,5 +1,5 @@
 use anyhow::Result;
-use reedline::{ColumnarMenu, DefaultPrompt, Emacs, FileBackedHistory, KeyCode, KeyModifiers, Reedline, ReedlineEvent, ReedlineMenu, Signal};
+use reedline::{ColumnarMenu, Emacs, FileBackedHistory, KeyCode, KeyModifiers, Reedline, ReedlineEvent, ReedlineMenu, Signal};
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
@@ -10,6 +10,7 @@ use crate::completion::FileCompleter;
 use crate::config::Config;
 use crate::db;
 use crate::executor::{self, ExecutionResult, Job};
+use crate::prompt::CahierPrompt;
 
 /// Handles the 'cd' command by changing directory and updating the environment
 ///
@@ -71,7 +72,7 @@ pub fn run_repl(
         .with_completer(Box::new(FileCompleter::new(current_env.clone())))
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(ColumnarMenu::default().with_name("completion_menu"))))
         .with_edit_mode(Box::new(edit_mode));
-    let prompt = DefaultPrompt::default();
+    let prompt = CahierPrompt::new();
 
     let mut jobs: Vec<Job> = Vec::new();
 
@@ -158,6 +159,7 @@ pub fn run_repl(
                 match executor::execute_in_pty(input, max_output_size, &pty_writer, &current_env, capture_output)
                 {
                     Ok(res) => {
+                         println!(); // Add newline between command output and next prompt
                          if let Err(e) = handle_execution_result(res, start, input, &db, &mut jobs) {
                              eprintln!("Error processing execution result: {}", e);
                          }
