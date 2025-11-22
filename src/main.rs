@@ -3,15 +3,7 @@ use clap::{Parser, Subcommand};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-mod common;
-mod completion;
-mod config;
-mod db;
-mod executor;
-mod export;
-mod prompt;
-mod repl;
-
+use cahier::{common, config, db, export, repl};
 use common::{DB_FILENAME, DEFAULT_MAX_OUTPUT_SIZE, CAHIER_DIR};
 
 #[derive(Parser)]

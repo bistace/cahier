@@ -59,7 +59,20 @@ impl Config {
             }
             
             let json = serde_json::to_string_pretty(&default_config)?;
-            fs::write(&config_path, json)?;
+            
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                let mut options = fs::OpenOptions::new();
+                options.write(true).create(true).truncate(true).mode(0o600);
+                let mut file = options.open(&config_path)?;
+                use std::io::Write;
+                file.write_all(json.as_bytes())?;
+            }
+            #[cfg(not(unix))]
+            {
+                fs::write(&config_path, json)?;
+            }
             
             return Ok(default_config);
         }

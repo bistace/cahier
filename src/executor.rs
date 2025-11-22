@@ -53,11 +53,13 @@ struct NonBlockingStdinGuard {
 impl NonBlockingStdinGuard {
     fn new() -> Result<Self> {
         let fd = std::io::stdin().as_raw_fd();
+        // SAFETY: fd is the file descriptor for stdin, which is guaranteed to be valid here.
         let orig_flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
         if orig_flags < 0 {
             return Err(anyhow::anyhow!("Failed to get stdin flags"));
         }
         
+        // SAFETY: fd is valid and we are setting the O_NONBLOCK flag to enable non-blocking reads.
         let res = unsafe { libc::fcntl(fd, libc::F_SETFL, orig_flags | libc::O_NONBLOCK) };
         if res < 0 {
             return Err(anyhow::anyhow!("Failed to set stdin to non-blocking"));
@@ -69,11 +71,106 @@ impl NonBlockingStdinGuard {
 
 impl Drop for NonBlockingStdinGuard {
     fn drop(&mut self) {
+        // SAFETY: self.fd is a valid file descriptor (stdin) and self.orig_flags are the original flags.
+        // We are restoring the original flags.
         unsafe {
             if libc::fcntl(self.fd, libc::F_SETFL, self.orig_flags) < 0 {
                 eprintln!("Failed to restore stdin flags");
             }
         }
+    }
+}
+
+/// Guard that ensures the temporary environment file is deleted
+struct EnvDumpGuard(PathBuf);
+
+impl Drop for EnvDumpGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn quote_for_trap(path: &str) -> String {
+    // We want to produce: umask 077; env -0 > "PATH"
+    // PATH needs " and \ escaped.
+    let escaped_path = path.replace('\\', "\\\\").replace('"', "\\\"");
+    let inner_cmd = format!("umask 077; env -0 > \"{}\"", escaped_path);
+    
+    // Now quote for the single-quoted trap argument
+    // replace ' with '\''
+    let trap_arg = inner_cmd.replace('\'', "'\\''");
+    format!("'{}'", trap_arg)
+}
+
+struct OutputHandler {
+    captured_output: Vec<u8>,
+    output_file: Option<File>,
+    output_filename: Option<String>,
+    max_output_size: usize,
+    capture_output: bool,
+}
+
+impl OutputHandler {
+    fn new(max_output_size: usize, capture_output: bool) -> Self {
+        Self {
+            captured_output: Vec::new(),
+            output_file: None,
+            output_filename: None,
+            max_output_size,
+            capture_output,
+        }
+    }
+
+    fn handle_data(&mut self, data: &[u8]) -> std::io::Result<()> {
+        if self.capture_output && self.captured_output.len() + data.len() > self.max_output_size && self.output_file.is_none() {
+            let output_dir = PathBuf::from(OUTPUT_DIR);
+            let _ = std::fs::create_dir_all(&output_dir);
+            let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+            let filename = format!("output_{}.txt", timestamp);
+            let filepath = output_dir.join(&filename);
+
+            #[cfg(unix)]
+            let file_res = {
+                use std::os::unix::fs::OpenOptionsExt;
+                fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&filepath)
+            };
+            #[cfg(not(unix))]
+            let file_res = File::create(&filepath);
+
+            if let Ok(mut file) = file_res {
+                let _ = file.write_all(&self.captured_output);
+                self.output_filename = Some(format!("{}/{}", OUTPUT_DIR, filename));
+                self.output_file = Some(file);
+            }
+            
+            self.captured_output.clear();
+            self.captured_output.shrink_to_fit();
+
+            if let Some(ref name) = self.output_filename {
+                self.captured_output.extend_from_slice(format!("[Output too large, redirected to {}]\n", name).as_bytes());
+            }
+        }
+
+        if self.capture_output {
+            if let Some(ref mut file) = self.output_file {
+                file.write_all(data)?;
+            } else {
+                self.captured_output.extend_from_slice(data);
+            }
+        }
+
+        io::stdout().write_all(data)?;
+        io::stdout().flush()?;
+        Ok(())
+    }
+    
+    fn finalize(self) -> (String, Option<String>) {
+        (String::from_utf8_lossy(&self.captured_output).to_string(), self.output_filename)
     }
 }
 
@@ -174,9 +271,10 @@ fn monitor_execution(
     });
 
     let mut buf = [0u8; 1024];
-    let mut captured_output = Vec::new();
-    let mut output_file: Option<File> = None;
-    let mut output_filename: Option<String> = None;
+    let mut output_handler = OutputHandler::new(max_output_size, capture_output);
+
+    // Ensure env dump file is cleaned up
+    let _env_dump_guard = EnvDumpGuard(env_dump_path.clone());
 
     let mut exit_code = None;
     let mut suspended = false;
@@ -224,7 +322,7 @@ fn monitor_execution(
         // 2. Poll for data with timeout
         #[cfg(unix)]
         {
-            // Safety: master_fd is valid and kept open by master
+            // SAFETY: master_fd is valid and kept open by master, so borrowing it is safe.
             let borrowed_fd = unsafe { std::os::unix::io::BorrowedFd::borrow_raw(master_fd) };
             let mut fds = [nix::poll::PollFd::new(borrowed_fd, nix::poll::PollFlags::POLLIN)];
             match nix::poll::poll(&mut fds, nix::poll::PollTimeout::from(50u16)) {
@@ -238,34 +336,9 @@ fn monitor_execution(
                                      let data = &buf[..n];
 
                                      // Process output (capture/print)
-                                     if capture_output && captured_output.len() + n > max_output_size && output_file.is_none() {
-                                        let output_dir = PathBuf::from(OUTPUT_DIR);
-                                        let _ = std::fs::create_dir_all(&output_dir);
-                                        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-                                        let filename = format!("output_{}.txt", timestamp);
-                                        let filepath = output_dir.join(&filename);
-
-                                        if let Ok(mut file) = File::create(&filepath) {
-                                             let _ = file.write_all(&captured_output);
-                                             output_filename = Some(format!("{}/{}", OUTPUT_DIR, filename));
-                                             output_file = Some(file);
-                                        }
-                                        captured_output.clear();
-                                        if let Some(ref name) = output_filename {
-                                            captured_output.extend_from_slice(format!("[Output too large, redirected to {}]\n", name).as_bytes());
-                                        }
+                                     if let Err(e) = output_handler.handle_data(data) {
+                                         eprintln!("Error handling output: {}", e);
                                      }
-
-                                     if capture_output {
-                                         if let Some(ref mut file) = output_file {
-                                             let _ = file.write_all(data);
-                                         } else {
-                                             captured_output.extend_from_slice(data);
-                                         }
-                                     }
-
-                                     let _ = io::stdout().write_all(data);
-                                     let _ = io::stdout().flush();
                                  }
                                  Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                                      // Continue
@@ -287,33 +360,9 @@ fn monitor_execution(
                  Ok(0) => break,
                  Ok(n) => {
                       let data = &buf[..n];
-                      // ... duplicate logic for capture/print ... 
-                       if capture_output && captured_output.len() + n > max_output_size && output_file.is_none() {
-                            let output_dir = PathBuf::from(OUTPUT_DIR);
-                            let _ = std::fs::create_dir_all(&output_dir);
-                            let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-                            let filename = format!("output_{}.txt", timestamp);
-                            let filepath = output_dir.join(&filename);
-
-                            if let Ok(mut file) = File::create(&filepath) {
-                                 let _ = file.write_all(&captured_output);
-                                 output_filename = Some(format!("{}/{}", OUTPUT_DIR, filename));
-                                 output_file = Some(file);
-                            }
-                            captured_output.clear();
-                            if let Some(ref name) = output_filename {
-                                captured_output.extend_from_slice(format!("[Output too large, redirected to {}]\n", name).as_bytes());
-                            }
-                       }
-                       if capture_output {
-                            if let Some(ref mut file) = output_file {
-                                let _ = file.write_all(data);
-                            } else {
-                                captured_output.extend_from_slice(data);
-                            }
-                       }
-                       let _ = io::stdout().write_all(data);
-                       let _ = io::stdout().flush();
+                      if let Err(e) = output_handler.handle_data(data) {
+                          eprintln!("Error handling output: {}", e);
+                      }
                  }
                  Err(_) => break,
             }
@@ -392,15 +441,14 @@ fn monitor_execution(
             let mut env = current_env.lock().unwrap();
             *env = new_env;
         }
-
-        // Clean up the temp file
-        let _ = fs::remove_file(&env_dump_path);
     }
 
+    let (output, output_file) = output_handler.finalize();
+
     Ok(ExecutionResult::Completed {
-        output: String::from_utf8_lossy(&captured_output).to_string(),
+        output,
         exit_code,
-        output_file: output_filename,
+        output_file,
     })
 }
 
@@ -434,8 +482,8 @@ pub fn execute_in_pty(
     // Wrap command with trap to capture environment on exit
     // Set umask 077 to ensure the temporary file is only readable by the owner
     let wrapped_command = format!(
-        "trap 'umask 077; env -0 > \"{}\"' EXIT; {}",
-        env_dump_path.display(),
+        "trap {} EXIT; {}",
+        quote_for_trap(&env_dump_path.to_string_lossy()),
         command
     );
     cmd.args(["-c", &wrapped_command]);

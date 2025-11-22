@@ -9,30 +9,9 @@ use crate::common::{HISTORY_FILENAME, MAX_HISTORY_ENTRIES, DB_FILENAME};
 use crate::completion::FileCompleter;
 use crate::config::Config;
 use crate::db;
-use crate::executor::{self, ExecutionResult, Job};
+use crate::executor::{self, Job};
 use crate::prompt::CahierPrompt;
-
-/// Handles the 'cd' command by changing directory and updating the environment
-///
-/// # Arguments
-/// * `path` - The directory path to change to
-/// * `current_env` - The environment HashMap to update with the new PWD
-///
-/// # Returns
-/// Ok(()) if successful, Err if the directory change fails
-pub fn handle_cd(path: &str, current_env: &Arc<Mutex<HashMap<String, String>>>) -> Result<()> {
-    std::env::set_current_dir(path)?;
-    
-    // Update PWD in current_env
-    if let Ok(cwd) = std::env::current_dir() {
-        if let Some(cwd_str) = cwd.to_str() {
-            let mut env = current_env.lock().unwrap();
-            env.insert("PWD".to_string(), cwd_str.to_string());
-        }
-    }
-    
-    Ok(())
-}
+use crate::command::{self, Registry, CommandContext, CommandResult};
 
 /// Runs the interactive REPL loop
 ///
@@ -75,6 +54,12 @@ pub fn run_repl(
     let mut prompt = CahierPrompt::new();
 
     let mut jobs: Vec<Job> = Vec::new();
+    
+    let mut registry = Registry::new();
+    registry.register(Box::new(command::CdCommand));
+    registry.register(Box::new(command::JobsCommand));
+    registry.register(Box::new(command::ExitCommand));
+    registry.register(Box::new(command::FgCommand));
 
     loop {
         let sig = line_editor.read_line(&prompt);
@@ -85,88 +70,35 @@ pub fn run_repl(
                     continue;
                 }
 
-                if input == "exit" {
-                    break;
-                }
-
                 let start_total = Instant::now();
 
-                // Handle 'cd' manually
-                if input.starts_with("cd ") {
-                    let path = input.strip_prefix("cd ").unwrap().trim();
-                    if let Err(e) = handle_cd(path, &current_env) {
-                        eprintln!("Error changing directory: {}", e);
-                        prompt.set_last_success(false);
-                    } else {
-                        // Log cd command as well, though output is empty
-                        if let Err(e) = db.log_entry(input, "", Some(0), 0, None) {
-                            eprintln!("Error logging cd command: {}", e);
+                // Check for built-in commands
+                let args: Vec<&str> = input.split_whitespace().collect();
+                if let Some(cmd_name) = args.get(0) {
+                    if let Some(cmd) = registry.get(cmd_name) {
+                        let mut context = CommandContext {
+                            db: &db,
+                            current_env: &current_env,
+                            jobs: &mut jobs,
+                            pty_writer: &pty_writer,
+                            max_output_size,
+                            prompt: &mut prompt,
+                        };
+                        
+                        match cmd.execute(&args[1..], &mut context) {
+                            Ok(CommandResult::Exit) => break,
+                            Ok(CommandResult::Continue) => continue,
+                            Err(e) => {
+                                eprintln!("Error executing {}: {}", cmd_name, e);
+                                prompt.set_last_success(false);
+                                prompt.set_last_duration(Some(start_total.elapsed()));
+                                continue;
+                            }
                         }
-                        prompt.set_last_success(true);
                     }
-                    prompt.set_last_duration(Some(start_total.elapsed()));
-                    continue;
                 }
 
-                // Handle 'jobs'
-                if input == "jobs" {
-                    for (i, job) in jobs.iter().enumerate() {
-                        println!("[{}] {} {}", i + 1, job.command, if i == jobs.len() - 1 { "+" } else { "" });
-                    }
-                    prompt.set_last_success(true);
-                    prompt.set_last_duration(Some(start_total.elapsed()));
-                    continue;
-                }
-
-                // Handle 'fg'
-                if input == "fg" || input.starts_with("fg ") {
-                    if jobs.is_empty() {
-                        eprintln!("fg: current: no such job");
-                        prompt.set_last_success(false);
-                        prompt.set_last_duration(Some(start_total.elapsed()));
-                        continue;
-                    }
-
-                    let job_index = if input == "fg" {
-                        jobs.len() - 1
-                    } else {
-                        let arg = input.strip_prefix("fg ").unwrap().trim();
-                        if let Ok(n) = arg.parse::<usize>() {
-                             if n > 0 && n <= jobs.len() {
-                                 n - 1
-                             } else {
-                                 eprintln!("fg: {}: no such job", arg);
-                                 prompt.set_last_success(false);
-                                 prompt.set_last_duration(Some(start_total.elapsed()));
-                                 continue;
-                             }
-                        } else {
-                            eprintln!("fg: invalid job specifier");
-                            prompt.set_last_success(false);
-                            prompt.set_last_duration(Some(start_total.elapsed()));
-                            continue;
-                        }
-                    };
-
-                    let job = jobs.remove(job_index);
-                    let job_command = job.command.clone();
-                    println!("{}", job.command);
-
-                    let start = Instant::now();
-                    match executor::resume_job(job, max_output_size, &pty_writer, &current_env) {
-                        Ok(res) => {
-                            handle_execution_result(res, start, &job_command, &db, &mut jobs, &mut prompt)?;
-                        }
-                        Err(e) => {
-                            eprintln!("Error resuming job: {}", e);
-                            prompt.set_last_success(false);
-                            prompt.set_last_duration(Some(start.elapsed()));
-                        }
-                    }
-                    continue;
-                }
-
-                // Execute command
+                // Execute command in PTY
                 let start = Instant::now();
 
                 // Check if command should have output captured
@@ -177,10 +109,19 @@ pub fn run_repl(
                 {
                     Ok(res) => {
                          println!(); // Add newline between command output and next prompt
-                         if let Err(e) = handle_execution_result(res, start, input, &db, &mut jobs, &mut prompt) {
+                         
+                         let mut context = CommandContext {
+                            db: &db,
+                            current_env: &current_env,
+                            jobs: &mut jobs,
+                            pty_writer: &pty_writer,
+                            max_output_size,
+                            prompt: &mut prompt,
+                        };
+                        
+                         if let Err(e) = command::handle_execution_result(res, start, input, &mut context) {
                              eprintln!("Error processing execution result: {}", e);
                              prompt.set_last_success(false);
-                             // Note: handle_execution_result already sets duration if successful, but we should handle error case
                              prompt.set_last_duration(Some(start.elapsed()));
                          }
                     }
@@ -209,126 +150,4 @@ pub fn run_repl(
         }
     }
     Ok(())
-}
-
-fn handle_execution_result(
-    res: ExecutionResult,
-    start_time: Instant,
-    input: &str,
-    db: &db::Database,
-    jobs: &mut Vec<Job>,
-    prompt: &mut CahierPrompt
-) -> Result<()> {
-    match res {
-        ExecutionResult::Completed { output, exit_code, output_file } => {
-            let duration = start_time.elapsed();
-            // Log error instead of propagating it to avoid crashing the REPL
-            if let Err(e) = db.log_entry(
-                input,
-                &output,
-                exit_code,
-                duration.as_millis(),
-                output_file.as_deref(),
-            ) {
-                eprintln!("Error logging command: {}", e);
-            }
-            
-            if let Some(code) = exit_code {
-                prompt.set_last_success(code == 0);
-            } else {
-                prompt.set_last_success(false);
-            }
-            prompt.set_last_duration(Some(duration));
-        }
-        ExecutionResult::Suspended(mut job) => {
-             let id = jobs.len() + 1;
-             job.id = id;
-             println!("\n[{}] Stopped  {}", id, job.command);
-             jobs.push(job);
-             prompt.set_last_success(true);
-             prompt.set_last_duration(Some(start_time.elapsed()));
-        }
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    #[test]
-    fn test_handle_cd() -> Result<()> {
-        // Store original directory to restore later
-        let original_dir = std::env::current_dir()?;
-        
-        // Create a temporary directory for testing
-        let temp_dir = std::env::temp_dir();
-        let test_dir = temp_dir.join(format!("cahier_test_{}", 
-            chrono::Utc::now().format("%Y%m%d_%H%M%S_%f")));
-        std::fs::create_dir_all(&test_dir)?;
-        
-        // Initialize environment
-        let env = Arc::new(Mutex::new(std::env::vars().collect()));
-        
-        // Change to the test directory
-        let test_dir_str = test_dir.to_str().unwrap();
-        handle_cd(test_dir_str, &env)?;
-        
-        // Verify current directory changed
-        let current_dir = std::env::current_dir()?;
-        assert_eq!(current_dir, test_dir);
-        
-        // Verify PWD environment variable was updated
-        {
-            let env_map = env.lock().unwrap();
-            assert!(env_map.contains_key("PWD"));
-            let pwd = env_map.get("PWD").unwrap();
-            assert_eq!(PathBuf::from(pwd), test_dir);
-        }
-        
-        // Test error case: try to cd to non-existent directory
-        let result = handle_cd("/this/directory/does/not/exist/cahier_test_xyz", &env);
-        assert!(result.is_err());
-        
-        // Restore original directory
-        std::env::set_current_dir(&original_dir)?;
-        
-        // Cleanup test directory
-        std::fs::remove_dir_all(&test_dir)?;
-        
-        Ok(())
-    }
-
-    #[test]
-    fn test_handle_cd_relative_path() -> Result<()> {
-        let original_dir = std::env::current_dir()?;
-        
-        // Create nested test directories
-        let temp_dir = std::env::temp_dir();
-        let test_base = temp_dir.join(format!("cahier_test_base_{}", 
-            chrono::Utc::now().format("%Y%m%d_%H%M%S_%f")));
-        let test_sub = test_base.join("subdir");
-        std::fs::create_dir_all(&test_sub)?;
-        
-        let env = Arc::new(Mutex::new(std::env::vars().collect()));
-        
-        // Change to base directory
-        handle_cd(test_base.to_str().unwrap(), &env)?;
-        assert_eq!(std::env::current_dir()?, test_base);
-        
-        // Change to subdirectory using relative path
-        handle_cd("subdir", &env)?;
-        assert_eq!(std::env::current_dir()?, test_sub);
-        
-        // Go back up using relative path
-        handle_cd("..", &env)?;
-        assert_eq!(std::env::current_dir()?, test_base);
-        
-        // Restore and cleanup
-        std::env::set_current_dir(&original_dir)?;
-        std::fs::remove_dir_all(&test_base)?;
-        
-        Ok(())
-    }
 }
