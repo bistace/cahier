@@ -9,7 +9,7 @@ use crate::common::{HISTORY_FILENAME, MAX_HISTORY_ENTRIES};
 use crate::completion::FileCompleter;
 use crate::config::Config;
 use crate::db;
-use crate::executor;
+use crate::executor::{self, ExecutionResult, Job};
 
 /// Handles the 'cd' command by changing directory and updating the environment
 ///
@@ -73,6 +73,8 @@ pub fn run_repl(
         .with_edit_mode(Box::new(edit_mode));
     let prompt = DefaultPrompt::default();
 
+    let mut jobs: Vec<Job> = Vec::new();
+
     loop {
         let sig = line_editor.read_line(&prompt);
         match sig {
@@ -98,6 +100,54 @@ pub fn run_repl(
                     continue;
                 }
 
+                // Handle 'jobs'
+                if input == "jobs" {
+                    for (i, job) in jobs.iter().enumerate() {
+                        println!("[{}] {} {}", i + 1, job.command, if i == jobs.len() - 1 { "+" } else { "" });
+                    }
+                    continue;
+                }
+
+                // Handle 'fg'
+                if input == "fg" || input.starts_with("fg ") {
+                    if jobs.is_empty() {
+                        eprintln!("fg: current: no such job");
+                        continue;
+                    }
+
+                    let job_index = if input == "fg" {
+                        jobs.len() - 1
+                    } else {
+                        let arg = input.strip_prefix("fg ").unwrap().trim();
+                        if let Ok(n) = arg.parse::<usize>() {
+                             if n > 0 && n <= jobs.len() {
+                                 n - 1
+                             } else {
+                                 eprintln!("fg: {}: no such job", arg);
+                                 continue;
+                             }
+                        } else {
+                            eprintln!("fg: invalid job specifier");
+                            continue;
+                        }
+                    };
+
+                    let job = jobs.remove(job_index);
+                    let job_command = job.command.clone();
+                    println!("{}", job.command);
+
+                    let start = Instant::now();
+                    match executor::resume_job(job, max_output_size, &pty_writer, &current_env) {
+                        Ok(res) => {
+                            handle_execution_result(res, start, &job_command, &db, &mut jobs)?;
+                        }
+                        Err(e) => {
+                            eprintln!("Error resuming job: {}", e);
+                        }
+                    }
+                    continue;
+                }
+
                 // Execute command
                 let start = Instant::now();
 
@@ -107,17 +157,10 @@ pub fn run_repl(
 
                 match executor::execute_in_pty(input, max_output_size, &pty_writer, &current_env, capture_output)
                 {
-                    Ok((output, exit_code, output_file)) => {
-                        let duration = start.elapsed();
-
-                        // Save to DB
-                        db.log_entry(
-                            input,
-                            &output,
-                            exit_code,
-                            duration.as_millis(),
-                            output_file.as_deref(),
-                        )?;
+                    Ok(res) => {
+                         if let Err(e) = handle_execution_result(res, start, input, &db, &mut jobs) {
+                             eprintln!("Error processing execution result: {}", e);
+                         }
                     }
                     Err(e) => {
                         eprintln!("Execution error: {}", e);
@@ -137,6 +180,34 @@ pub fn run_repl(
                 eprintln!("Error: {:?}", e);
                 break;
             }
+        }
+    }
+    Ok(())
+}
+
+fn handle_execution_result(
+    res: ExecutionResult,
+    start_time: Instant,
+    input: &str,
+    db: &db::Database,
+    jobs: &mut Vec<Job>
+) -> Result<()> {
+    match res {
+        ExecutionResult::Completed { output, exit_code, output_file } => {
+            let duration = start_time.elapsed();
+            db.log_entry(
+                input,
+                &output,
+                exit_code,
+                duration.as_millis(),
+                output_file.as_deref(),
+            )?;
+        }
+        ExecutionResult::Suspended(mut job) => {
+             let id = jobs.len() + 1;
+             job.id = id;
+             println!("\n[{}] Stopped  {}", id, job.command);
+             jobs.push(job);
         }
     }
     Ok(())

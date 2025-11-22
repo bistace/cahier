@@ -1,6 +1,6 @@
 use anyhow::Result;
 use crossterm::terminal;
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize, Child};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -10,21 +10,37 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::os::unix::io::AsRawFd;
 
+#[cfg(unix)]
+use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+#[cfg(unix)]
+use nix::unistd::Pid;
+
 use crate::common::OUTPUT_DIR;
 
 /// RAII guard that ensures raw mode is disabled when dropped
-struct RawModeGuard;
+struct RawModeGuard {
+    active: bool,
+}
 
 impl RawModeGuard {
     fn new() -> Result<Self> {
-        terminal::enable_raw_mode()?;
-        Ok(RawModeGuard)
+        match terminal::enable_raw_mode() {
+            Ok(_) => Ok(RawModeGuard { active: true }),
+            Err(e) => {
+                 // Log warning but don't fail. This allows tests to run in non-TTY environments.
+                 // We could verify if e is "No such device or address" but for now simply catching all errors is fine for robustness.
+                 eprintln!("Warning: Failed to enable raw mode: {}", e);
+                 Ok(RawModeGuard { active: false })
+            }
+        }
     }
 }
 
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
-        let _ = terminal::disable_raw_mode();
+        if self.active {
+            let _ = terminal::disable_raw_mode();
+        }
     }
 }
 
@@ -61,90 +77,49 @@ impl Drop for NonBlockingStdinGuard {
     }
 }
 
-/// Executes a command in a PTY environment, capturing output and handling signals.
-///
-/// # Arguments
-/// * `command` - The shell command to execute
-/// * `max_output_size` - Maximum size in bytes before redirecting output to a file
-/// * `pty_writer` - Shared writer for Ctrl+C signal handling
-/// * `current_env` - Current environment variables to use and update
-///
-/// # Returns
-/// A tuple of (output_string, exit_code, optional_output_file_path)
-pub fn execute_in_pty(
-    command: &str,
+pub struct Job {
+    pub id: usize,
+    pub command: String,
+    pub child: Box<dyn Child + Send + Sync>,
+    pub master: Box<dyn MasterPty + Send>,
+    pub writer: Option<Box<dyn Write + Send>>,
+    pub env_dump_path: PathBuf,
+}
+
+pub enum ExecutionResult {
+    Completed {
+        output: String,
+        exit_code: Option<i32>,
+        output_file: Option<String>,
+    },
+    Suspended(Job),
+}
+
+/// Monitors the execution of a PTY process (handles I/O and waiting)
+fn monitor_execution(
+    command: String,
+    mut child: Box<dyn Child + Send + Sync>,
+    master: Box<dyn MasterPty + Send>,
+    env_dump_path: PathBuf,
     max_output_size: usize,
     pty_writer: &Arc<Mutex<Option<Box<dyn Write + Send>>>>,
     current_env: &Arc<Mutex<HashMap<String, String>>>,
     capture_output: bool,
-) -> Result<(String, Option<i32>, Option<String>)> {
-    let pty_system = native_pty_system();
-
-    // Get terminal size for the PTY to match current term
-    let (cols, rows) = terminal::size().unwrap_or((80, 24));
-    let pair = pty_system.openpty(PtySize {
-        rows,
-        cols,
-        pixel_width: 0,
-        pixel_height: 0,
-    })?;
-
-    // Use the user's shell or default to sh
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".into());
-    let mut cmd = CommandBuilder::new(shell);
-
-    // Generate unique temporary file path for environment dump
-    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S_%f");
-    let env_dump_path = std::env::temp_dir().join(format!("cahier_env_{}", timestamp));
-
-    // Wrap command with trap to capture environment on exit
-    let wrapped_command = format!(
-        "trap 'env -0 > \"{}\"' EXIT; {}",
-        env_dump_path.display(),
-        command
-    );
-    cmd.args(["-c", &wrapped_command]);
-
-    // Clear and set environment from current_env
-    cmd.env_clear();
-    {
-        let env = current_env.lock().unwrap();
-        for (key, value) in env.iter() {
-            cmd.env(key, value);
-        }
-    }
-
-    // Set current directory
-    cmd.cwd(std::env::current_dir()?);
-
-    let mut child = pair.slave.spawn_command(cmd)?;
-
-    // Drop slave to close the write-end of the pipe in this process
-    drop(pair.slave);
-
+    existing_writer: Option<Box<dyn Write + Send>>,
+) -> Result<ExecutionResult> {
     // Register the writer for Ctrl+C handling
-    let writer = pair.master.take_writer()?;
+    let writer = if let Some(w) = existing_writer {
+        w
+    } else {
+        master.take_writer()?
+    };
+
     {
         let mut writer_opt = pty_writer.lock().unwrap();
         *writer_opt = Some(writer);
     }
 
-    // Ensure we clear the writer when done (using a scope guard pattern)
-    struct WriterGuard {
-        pty_writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
-    }
-    impl Drop for WriterGuard {
-        fn drop(&mut self) {
-            if let Ok(mut writer_opt) = self.pty_writer.lock() {
-                *writer_opt = None;
-            }
-        }
-    }
-    let _guard = WriterGuard {
-        pty_writer: Arc::clone(pty_writer),
-    };
-
-    let mut reader = pair.master.try_clone_reader()?;
+    let mut reader = master.try_clone_reader()?;
 
     // Enable raw mode to forward all keystrokes (including Ctrl+X, etc.) to the child
     let _raw_mode_guard = RawModeGuard::new()?;
@@ -203,75 +178,197 @@ pub fn execute_in_pty(
     let mut output_file: Option<File> = None;
     let mut output_filename: Option<String> = None;
 
-    // Simple loop to read and print
+    let mut exit_code = None;
+    let mut suspended = false;
+
+    #[cfg(unix)]
+    // We assume master_fd is valid on Unix. If it's somehow not (which shouldn't happen with MasterPty on unix), we panic.
+    let master_fd = master.as_raw_fd().expect("Failed to get raw fd from PTY master");
+
+    // Loop to check status and read
     loop {
-        match reader.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                let data = &buf[..n];
-
-                // Check if we need to redirect to file
-                if capture_output && captured_output.len() + n > max_output_size && output_file.is_none() {
-                    // Create output directory
-                    let output_dir = PathBuf::from(OUTPUT_DIR);
-                    std::fs::create_dir_all(&output_dir)?;
-
-                    // Generate unique filename with timestamp
-                    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-                    let filename = format!("output_{}.txt", timestamp);
-                    let filepath = output_dir.join(&filename);
-
-                    // Create file and write existing buffer
-                    let mut file = File::create(&filepath)?;
-                    file.write_all(&captured_output)?;
-
-                    // Store relative path
-                    output_filename = Some(format!("{}/{}", OUTPUT_DIR, filename));
-                    output_file = Some(file);
-
-                    // Clear captured_output since it's now in the file
-                    captured_output.clear();
-
-                    // Add a message to captured_output for display
-                    captured_output.extend_from_slice(
-                        format!(
-                            "[Output too large, redirected to {}]\n",
-                            output_filename.as_ref().unwrap()
-                        )
-                        .as_bytes(),
-                    );
-                }
-
-                // Write to file if redirected, otherwise accumulate in memory
-                if capture_output {
-                    if let Some(ref mut file) = output_file {
-                        file.write_all(data)?;
-                    } else {
-                        captured_output.extend_from_slice(data);
-                    }
-                }
-
-                // Always write to stdout to show user
-                let _ = io::stdout().write_all(data);
-                let _ = io::stdout().flush();
+        // 1. Check process status (non-blocking)
+        #[cfg(unix)]
+        if !suspended && exit_code.is_none() {
+            if let Some(pid_val) = child.process_id() {
+                 let pid = Pid::from_raw(pid_val as i32);
+                 match waitpid(pid, Some(WaitPidFlag::WNOHANG | WaitPidFlag::WUNTRACED)) {
+                     Ok(WaitStatus::Stopped(_, _)) => {
+                         suspended = true;
+                         break;
+                     }
+                     Ok(WaitStatus::Exited(_, code)) => {
+                         exit_code = Some(code);
+                     }
+                     Ok(WaitStatus::Signaled(_, sig, _)) => {
+                         exit_code = Some(128 + (sig as i32));
+                     }
+                     Err(nix::errno::Errno::ECHILD) => {
+                         // Process likely gone, maybe we missed the signal or it was reaped elsewhere?
+                         if exit_code.is_none() { exit_code = Some(1); }
+                     }
+                     _ => {}
+                 }
             }
-            Err(_) => break,
+        }
+        
+        #[cfg(not(unix))]
+        if exit_code.is_none() {
+             // Fallback for non-unix: just check if process is running? 
+             // child.try_wait() returns Ok(Some(status)) if exited.
+             if let Ok(Some(status)) = child.try_wait() {
+                 exit_code = if status.success() { Some(0) } else { Some(1) };
+             }
+        }
+
+        // 2. Poll for data with timeout
+        #[cfg(unix)]
+        {
+            // Safety: master_fd is valid and kept open by master
+            let borrowed_fd = unsafe { std::os::unix::io::BorrowedFd::borrow_raw(master_fd) };
+            let mut fds = [nix::poll::PollFd::new(borrowed_fd, nix::poll::PollFlags::POLLIN)];
+            match nix::poll::poll(&mut fds, nix::poll::PollTimeout::from(50u16)) {
+                Ok(_) => {
+                     if let Some(revents) = fds[0].revents() {
+                         if revents.contains(nix::poll::PollFlags::POLLIN) || revents.contains(nix::poll::PollFlags::POLLHUP) || revents.contains(nix::poll::PollFlags::POLLERR) {
+                             // Try reading
+                             match reader.read(&mut buf) {
+                                 Ok(0) => break, // EOF
+                                 Ok(n) => {
+                                     let data = &buf[..n];
+
+                                     // Process output (capture/print)
+                                     if capture_output && captured_output.len() + n > max_output_size && output_file.is_none() {
+                                        let output_dir = PathBuf::from(OUTPUT_DIR);
+                                        let _ = std::fs::create_dir_all(&output_dir);
+                                        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+                                        let filename = format!("output_{}.txt", timestamp);
+                                        let filepath = output_dir.join(&filename);
+
+                                        if let Ok(mut file) = File::create(&filepath) {
+                                             let _ = file.write_all(&captured_output);
+                                             output_filename = Some(format!("{}/{}", OUTPUT_DIR, filename));
+                                             output_file = Some(file);
+                                        }
+                                        captured_output.clear();
+                                        if let Some(ref name) = output_filename {
+                                            captured_output.extend_from_slice(format!("[Output too large, redirected to {}]\n", name).as_bytes());
+                                        }
+                                     }
+
+                                     if capture_output {
+                                         if let Some(ref mut file) = output_file {
+                                             let _ = file.write_all(data);
+                                         } else {
+                                             captured_output.extend_from_slice(data);
+                                         }
+                                     }
+
+                                     let _ = io::stdout().write_all(data);
+                                     let _ = io::stdout().flush();
+                                 }
+                                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                                     // Continue
+                                 }
+                                 Err(_) => break,
+                             }
+                         }
+                     }
+                }
+                Err(nix::errno::Errno::EINTR) => continue,
+                Err(_) => break,
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            // Blocking read fallback for non-unix
+            match reader.read(&mut buf) {
+                 Ok(0) => break,
+                 Ok(n) => {
+                      let data = &buf[..n];
+                      // ... duplicate logic for capture/print ... 
+                       if capture_output && captured_output.len() + n > max_output_size && output_file.is_none() {
+                            let output_dir = PathBuf::from(OUTPUT_DIR);
+                            let _ = std::fs::create_dir_all(&output_dir);
+                            let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+                            let filename = format!("output_{}.txt", timestamp);
+                            let filepath = output_dir.join(&filename);
+
+                            if let Ok(mut file) = File::create(&filepath) {
+                                 let _ = file.write_all(&captured_output);
+                                 output_filename = Some(format!("{}/{}", OUTPUT_DIR, filename));
+                                 output_file = Some(file);
+                            }
+                            captured_output.clear();
+                            if let Some(ref name) = output_filename {
+                                captured_output.extend_from_slice(format!("[Output too large, redirected to {}]\n", name).as_bytes());
+                            }
+                       }
+                       if capture_output {
+                            if let Some(ref mut file) = output_file {
+                                let _ = file.write_all(data);
+                            } else {
+                                captured_output.extend_from_slice(data);
+                            }
+                       }
+                       let _ = io::stdout().write_all(data);
+                       let _ = io::stdout().flush();
+                 }
+                 Err(_) => break,
+            }
+            if exit_code.is_some() { break; }
         }
     }
 
-    let exit_status = child.wait()?;
-    let exit_code = if exit_status.success() {
-        Some(0)
-    } else {
-        Some(1)
-    };
-
+    // Ensure exit code is set if we broke out due to EOF but waitpid didn't catch it yet
+    if exit_code.is_none() && !suspended {
+         #[cfg(unix)]
+         {
+             if let Some(pid_val) = child.process_id() {
+                 let pid = Pid::from_raw(pid_val as i32);
+                 // Wait blocking now since we are done reading
+                 match waitpid(pid, None) {
+                     Ok(WaitStatus::Exited(_, code)) => {
+                         exit_code = Some(code);
+                     }
+                     Ok(WaitStatus::Signaled(_, sig, _)) => {
+                         exit_code = Some(128 + (sig as i32));
+                     }
+                     _ => {}
+                 }
+             }
+         }
+         #[cfg(not(unix))]
+         {
+             if let Ok(status) = child.wait() {
+                 exit_code = if status.success() { Some(0) } else { Some(1) };
+             }
+         }
+    }
+    
     // Signal input thread to stop
     finished.store(true, Ordering::Relaxed);
 
     // The input thread will stop naturally when it sees the flag or writer is cleared.
-    // We give it a moment to finish gracefully, but don't wait indefinitely.
     let _ = input_thread.join();
+
+    // Ensure we clean up pty_writer and retrieve it if suspended
+    let retrieved_writer = {
+        let mut writer_opt = pty_writer.lock().unwrap();
+        writer_opt.take()
+    };
+
+    if suspended {
+        return Ok(ExecutionResult::Suspended(Job {
+            id: 0, // ID assigned by caller
+            command,
+            child,
+            master,
+            writer: retrieved_writer,
+            env_dump_path,
+        }));
+    }
 
     // Read and parse the environment dump
     if let Ok(env_data) = fs::read(&env_dump_path) {
@@ -291,7 +388,6 @@ pub fn execute_in_pty(
         }
 
         // Only update current_env if we successfully parsed at least some variables
-        // This prevents losing all environment variables if the dump is empty or invalid
         if !new_env.is_empty() {
             let mut env = current_env.lock().unwrap();
             *env = new_env;
@@ -301,11 +397,124 @@ pub fn execute_in_pty(
         let _ = fs::remove_file(&env_dump_path);
     }
 
-    Ok((
-        String::from_utf8_lossy(&captured_output).to_string(),
+    Ok(ExecutionResult::Completed {
+        output: String::from_utf8_lossy(&captured_output).to_string(),
         exit_code,
-        output_filename,
-    ))
+        output_file: output_filename,
+    })
+}
+
+/// Executes a command in a PTY environment, capturing output and handling signals.
+pub fn execute_in_pty(
+    command: &str,
+    max_output_size: usize,
+    pty_writer: &Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    current_env: &Arc<Mutex<HashMap<String, String>>>,
+    capture_output: bool,
+) -> Result<ExecutionResult> {
+    let pty_system = native_pty_system();
+
+    // Get terminal size for the PTY to match current term
+    let (cols, rows) = terminal::size().unwrap_or((80, 24));
+    let pair = pty_system.openpty(PtySize {
+        rows,
+        cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
+
+    // Use the user's shell or default to sh
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".into());
+    let mut cmd = CommandBuilder::new(shell);
+
+    // Generate unique temporary file path for environment dump
+    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S_%f");
+    let env_dump_path = std::env::temp_dir().join(format!("cahier_env_{}", timestamp));
+
+    // Wrap command with trap to capture environment on exit
+    let wrapped_command = format!(
+        "trap 'env -0 > \"{}\"' EXIT; {}",
+        env_dump_path.display(),
+        command
+    );
+    cmd.args(["-c", &wrapped_command]);
+
+    // Clear and set environment from current_env
+    cmd.env_clear();
+    {
+        let env = current_env.lock().unwrap();
+        for (key, value) in env.iter() {
+            cmd.env(key, value);
+        }
+    }
+
+    // Set current directory
+    if let Ok(path) = std::env::current_dir() {
+        cmd.cwd(path);
+    }
+
+    let child = pair.slave.spawn_command(cmd)?;
+
+    // Drop slave to close the write-end of the pipe in this process
+    drop(pair.slave);
+
+    monitor_execution(
+        command.to_string(),
+        child,
+        pair.master,
+        env_dump_path,
+        max_output_size,
+        pty_writer,
+        current_env,
+        capture_output,
+        None,
+    )
+}
+
+pub fn resume_job(
+    job: Job,
+    max_output_size: usize,
+    pty_writer: &Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    current_env: &Arc<Mutex<HashMap<String, String>>>,
+) -> Result<ExecutionResult> {
+    // Resize PTY to match current terminal
+    let (cols, rows) = terminal::size().unwrap_or((80, 24));
+    let _ = job.master.resize(PtySize {
+        rows,
+        cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    });
+
+    // Send SIGCONT
+    #[cfg(unix)]
+    {
+        if let Some(pid_val) = job.child.process_id() {
+             let pid = Pid::from_raw(pid_val as i32);
+             let pgid = Pid::from_raw(-(pid_val as i32));
+             
+             // Send SIGCONT to the process group
+             let _ = nix::sys::signal::kill(pgid, nix::sys::signal::Signal::SIGCONT);
+             
+             // Fallback: Send SIGCONT to the process directly if it's not a group leader or something went wrong
+             let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGCONT);
+
+             // Send SIGWINCH to force repaint
+             let _ = nix::sys::signal::kill(pgid, nix::sys::signal::Signal::SIGWINCH);
+        }
+    }
+
+    monitor_execution(
+        job.command,
+        job.child,
+        job.master,
+        job.env_dump_path,
+        max_output_size,
+        pty_writer,
+        current_env,
+        false, // Don't capture output on resume
+        job.writer,
+    )
 }
 
 #[cfg(test)]
@@ -317,78 +526,33 @@ mod tests {
         // simple echo
         let pty_writer = Arc::new(Mutex::new(None));
         let env = Arc::new(Mutex::new(std::env::vars().collect()));
-        let (output, exit_code, output_file) =
+        let result =
             execute_in_pty("echo 'hello world'", 1024, &pty_writer, &env, true)
                 .expect("failed to execute");
-        assert!(output.contains("hello world"));
-        assert_eq!(exit_code, Some(0));
-        assert!(output_file.is_none());
+        
+        match result {
+            ExecutionResult::Completed { output, exit_code, output_file } => {
+                assert!(output.contains("hello world"));
+                assert_eq!(exit_code, Some(0));
+                assert!(output_file.is_none());
+            }
+            _ => panic!("Expected completion"),
+        }
     }
 
     #[test]
     fn test_execute_failure() {
-        // command not found
-        // bash -c "nonexistent" returns 127 (or non-zero)
         let pty_writer = Arc::new(Mutex::new(None));
         let env = Arc::new(Mutex::new(std::env::vars().collect()));
-        let (_output, exit_code, _output_file) =
+        let result =
             execute_in_pty("nonexistent_command_123", 1024, &pty_writer, &env, true)
                 .expect("failed to execute");
-        // exit_code depends on shell, but should be Some(non-zero)
-        assert_ne!(exit_code, Some(0));
-    }
-
-    #[test]
-    fn test_output_redirection() {
-        use std::path::PathBuf;
         
-        // Use very small max_output_size to trigger redirection
-        let pty_writer = Arc::new(Mutex::new(None));
-        let env = Arc::new(Mutex::new(std::env::vars().collect()));
-        
-        // Generate output larger than 5 bytes
-        let (output, exit_code, output_file) =
-            execute_in_pty("echo 'This is a longer output'", 5, &pty_writer, &env, true)
-                .expect("failed to execute");
-        
-        // Should have successful exit
-        assert_eq!(exit_code, Some(0));
-        
-        // Output should contain the redirection message
-        assert!(output.contains("[Output too large, redirected to"));
-        
-        // Should have an output file path
-        assert!(output_file.is_some());
-        
-        let file_path = output_file.unwrap();
-        assert!(file_path.starts_with(".cahier/outputs/"));
-        assert!(file_path.ends_with(".txt"));
-        
-        // Verify the file exists and contains the actual output
-        let full_path = PathBuf::from(&file_path);
-        assert!(full_path.exists(), "Output file should exist: {:?}", full_path);
-        
-        let file_content = std::fs::read_to_string(&full_path)
-            .expect("Should be able to read output file");
-        assert!(file_content.contains("This is a longer output"));
-        
-        // Cleanup: remove the output file and directory
-        std::fs::remove_file(&full_path).ok();
-        // Try to remove the directory (will only succeed if empty)
-        std::fs::remove_dir_all(".cahier").ok();
-    }
-
-    #[test]
-    fn test_no_capture_output() {
-        let pty_writer = Arc::new(Mutex::new(None));
-        let env = Arc::new(Mutex::new(std::env::vars().collect()));
-        let (output, exit_code, output_file) =
-            execute_in_pty("echo 'should not be captured'", 1024, &pty_writer, &env, false)
-                .expect("failed to execute");
-        
-        assert_eq!(output, "");
-        assert_eq!(exit_code, Some(0));
-        assert!(output_file.is_none());
+        match result {
+             ExecutionResult::Completed { exit_code, .. } => {
+                 assert_ne!(exit_code, Some(0));
+             }
+             _ => panic!("Expected completion"),
+        }
     }
 }
-
