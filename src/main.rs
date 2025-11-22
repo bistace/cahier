@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 
 mod common;
 mod completion;
+mod config;
 mod db;
 mod executor;
 mod export;
@@ -42,6 +43,7 @@ enum Commands {
 fn main() -> Result<()> {
     let args = Args::parse();
     let db = db::Database::init(DB_FILENAME)?;
+    let config = config::Config::load()?;
 
     match args.command {
         Some(Commands::Export {
@@ -63,12 +65,12 @@ fn main() -> Result<()> {
         }
         Some(Commands::Start { max_output_size }) => {
             let pty_writer = setup_signal_handler()?;
-            repl::run_repl(db, max_output_size, pty_writer)
+            repl::run_repl(db, max_output_size, pty_writer, config)
         }
         None => {
             // Default behavior: start REPL with default max_output_size
             let pty_writer = setup_signal_handler()?;
-            repl::run_repl(db, DEFAULT_MAX_OUTPUT_SIZE, pty_writer)
+            repl::run_repl(db, DEFAULT_MAX_OUTPUT_SIZE, pty_writer, config)
         }
     }
 }

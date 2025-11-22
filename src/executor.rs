@@ -76,6 +76,7 @@ pub fn execute_in_pty(
     max_output_size: usize,
     pty_writer: &Arc<Mutex<Option<Box<dyn Write + Send>>>>,
     current_env: &Arc<Mutex<HashMap<String, String>>>,
+    capture_output: bool,
 ) -> Result<(String, Option<i32>, Option<String>)> {
     let pty_system = native_pty_system();
 
@@ -210,7 +211,7 @@ pub fn execute_in_pty(
                 let data = &buf[..n];
 
                 // Check if we need to redirect to file
-                if captured_output.len() + n > max_output_size && output_file.is_none() {
+                if capture_output && captured_output.len() + n > max_output_size && output_file.is_none() {
                     // Create output directory
                     let output_dir = PathBuf::from(OUTPUT_DIR);
                     std::fs::create_dir_all(&output_dir)?;
@@ -242,10 +243,12 @@ pub fn execute_in_pty(
                 }
 
                 // Write to file if redirected, otherwise accumulate in memory
-                if let Some(ref mut file) = output_file {
-                    file.write_all(data)?;
-                } else {
-                    captured_output.extend_from_slice(data);
+                if capture_output {
+                    if let Some(ref mut file) = output_file {
+                        file.write_all(data)?;
+                    } else {
+                        captured_output.extend_from_slice(data);
+                    }
                 }
 
                 // Always write to stdout to show user
@@ -315,7 +318,7 @@ mod tests {
         let pty_writer = Arc::new(Mutex::new(None));
         let env = Arc::new(Mutex::new(std::env::vars().collect()));
         let (output, exit_code, output_file) =
-            execute_in_pty("echo 'hello world'", 1024, &pty_writer, &env)
+            execute_in_pty("echo 'hello world'", 1024, &pty_writer, &env, true)
                 .expect("failed to execute");
         assert!(output.contains("hello world"));
         assert_eq!(exit_code, Some(0));
@@ -329,7 +332,7 @@ mod tests {
         let pty_writer = Arc::new(Mutex::new(None));
         let env = Arc::new(Mutex::new(std::env::vars().collect()));
         let (_output, exit_code, _output_file) =
-            execute_in_pty("nonexistent_command_123", 1024, &pty_writer, &env)
+            execute_in_pty("nonexistent_command_123", 1024, &pty_writer, &env, true)
                 .expect("failed to execute");
         // exit_code depends on shell, but should be Some(non-zero)
         assert_ne!(exit_code, Some(0));
@@ -345,7 +348,7 @@ mod tests {
         
         // Generate output larger than 5 bytes
         let (output, exit_code, output_file) =
-            execute_in_pty("echo 'This is a longer output'", 5, &pty_writer, &env)
+            execute_in_pty("echo 'This is a longer output'", 5, &pty_writer, &env, true)
                 .expect("failed to execute");
         
         // Should have successful exit
@@ -373,6 +376,19 @@ mod tests {
         std::fs::remove_file(&full_path).ok();
         // Try to remove the directory (will only succeed if empty)
         std::fs::remove_dir_all(".cahier").ok();
+    }
+
+    #[test]
+    fn test_no_capture_output() {
+        let pty_writer = Arc::new(Mutex::new(None));
+        let env = Arc::new(Mutex::new(std::env::vars().collect()));
+        let (output, exit_code, output_file) =
+            execute_in_pty("echo 'should not be captured'", 1024, &pty_writer, &env, false)
+                .expect("failed to execute");
+        
+        assert_eq!(output, "");
+        assert_eq!(exit_code, Some(0));
+        assert!(output_file.is_none());
     }
 }
 

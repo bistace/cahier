@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use crate::common::{HISTORY_FILENAME, MAX_HISTORY_ENTRIES};
 use crate::completion::FileCompleter;
+use crate::config::Config;
 use crate::db;
 use crate::executor;
 
@@ -42,6 +43,7 @@ pub fn run_repl(
     db: db::Database,
     max_output_size: usize,
     pty_writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    config: Config,
 ) -> Result<()> {
     println!("Cahier started.");
     println!("Database: ./cahier.db");
@@ -98,7 +100,12 @@ pub fn run_repl(
 
                 // Execute command
                 let start = Instant::now();
-                match executor::execute_in_pty(input, max_output_size, &pty_writer, &current_env)
+
+                // Check if command should have output captured
+                let cmd_name = input.split_whitespace().next().unwrap_or("");
+                let capture_output = !config.ignored_outputs.iter().any(|ignored| ignored == cmd_name);
+
+                match executor::execute_in_pty(input, max_output_size, &pty_writer, &current_env, capture_output)
                 {
                     Ok((output, exit_code, output_file)) => {
                         let duration = start.elapsed();
