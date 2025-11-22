@@ -105,7 +105,7 @@ pub fn run_repl(
                 let cmd_name = input.split_whitespace().next().unwrap_or("");
                 let capture_output = !config.ignored_outputs.iter().any(|ignored| ignored == cmd_name);
 
-                match executor::execute_in_pty(input, max_output_size, &pty_writer, &current_env, capture_output)
+                match executor::execute_in_pty(input, max_output_size, &pty_writer, &current_env, capture_output, false)
                 {
                     Ok(res) => {
                          println!(); // Add newline between command output and next prompt

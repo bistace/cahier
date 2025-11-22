@@ -13,6 +13,7 @@ fn test_executor_simple_command() -> Result<()> {
         1024,
         &pty_writer,
         &current_env,
+        true,
         true
     )?;
     
@@ -42,6 +43,7 @@ fn test_executor_large_output() -> Result<()> {
         100,
         &pty_writer,
         &current_env,
+        true,
         true
     )?;
     

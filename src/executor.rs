@@ -108,16 +108,18 @@ struct OutputHandler {
     output_filename: Option<String>,
     max_output_size: usize,
     capture_output: bool,
+    suppress_output: bool,
 }
 
 impl OutputHandler {
-    fn new(max_output_size: usize, capture_output: bool) -> Self {
+    fn new(max_output_size: usize, capture_output: bool, suppress_output: bool) -> Self {
         Self {
             captured_output: Vec::new(),
             output_file: None,
             output_filename: None,
             max_output_size,
             capture_output,
+            suppress_output,
         }
     }
 
@@ -164,8 +166,10 @@ impl OutputHandler {
             }
         }
 
-        io::stdout().write_all(data)?;
-        io::stdout().flush()?;
+        if !self.suppress_output {
+            io::stdout().write_all(data)?;
+            io::stdout().flush()?;
+        }
         Ok(())
     }
     
@@ -198,6 +202,7 @@ struct MonitorConfig {
     max_output_size: usize,
     capture_output: bool,
     existing_writer: Option<Box<dyn Write + Send>>,
+    suppress_output: bool,
 }
 
 /// Monitors the execution of a PTY process (handles I/O and waiting)
@@ -278,7 +283,7 @@ fn monitor_execution(
     });
 
     let mut buf = [0u8; 1024];
-    let mut output_handler = OutputHandler::new(config.max_output_size, config.capture_output);
+    let mut output_handler = OutputHandler::new(config.max_output_size, config.capture_output, config.suppress_output);
 
     // Ensure env dump file is cleaned up
     let _env_dump_guard = EnvDumpGuard(config.env_dump_path.clone());
@@ -466,6 +471,7 @@ pub fn execute_in_pty(
     pty_writer: &Arc<Mutex<Option<Box<dyn Write + Send>>>>,
     current_env: &Arc<Mutex<HashMap<String, String>>>,
     capture_output: bool,
+    suppress_output: bool,
 ) -> Result<ExecutionResult> {
     let pty_system = native_pty_system();
 
@@ -525,6 +531,7 @@ pub fn execute_in_pty(
             max_output_size,
             capture_output,
             existing_writer: None,
+            suppress_output,
         },
     )
 }
@@ -573,6 +580,7 @@ pub fn resume_job(
             max_output_size,
             capture_output: false, // Don't capture output on resume
             existing_writer: job.writer,
+            suppress_output: false,
         },
     )
 }
@@ -587,7 +595,7 @@ mod tests {
         let pty_writer = Arc::new(Mutex::new(None));
         let env = Arc::new(Mutex::new(std::env::vars().collect()));
         let result =
-            execute_in_pty("echo 'hello world'", 1024, &pty_writer, &env, true)
+            execute_in_pty("echo 'hello world'", 1024, &pty_writer, &env, true, true)
                 .expect("failed to execute");
         
         match result {
@@ -605,7 +613,7 @@ mod tests {
         let pty_writer = Arc::new(Mutex::new(None));
         let env = Arc::new(Mutex::new(std::env::vars().collect()));
         let result =
-            execute_in_pty("nonexistent_command_123", 1024, &pty_writer, &env, true)
+            execute_in_pty("nonexistent_command_123", 1024, &pty_writer, &env, true, true)
                 .expect("failed to execute");
         
         match result {
