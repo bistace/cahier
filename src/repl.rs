@@ -61,6 +61,11 @@ pub fn run_repl(
     registry.register(Box::new(command::ExitCommand));
     registry.register(Box::new(command::FgCommand));
 
+    // Load aliases from user shell
+    println!("Loading aliases...");
+    let aliases = load_aliases();
+    println!("Loaded {} aliases.", aliases.len());
+
     loop {
         let sig = line_editor.read_line(&prompt);
         match sig {
@@ -72,8 +77,11 @@ pub fn run_repl(
 
                 let start_total = Instant::now();
 
+                // Expand aliases
+                let expanded_input = expand_alias(input, &aliases);
+                
                 // Check for built-in commands
-                let args: Vec<&str> = input.split_whitespace().collect();
+                let args: Vec<&str> = expanded_input.split_whitespace().collect();
                 if let Some(cmd_name) = args.first() {
                     if let Some(cmd) = registry.get(cmd_name) {
                         let mut context = CommandContext {
@@ -102,10 +110,15 @@ pub fn run_repl(
                 let start = Instant::now();
 
                 // Check if command should have output captured
-                let cmd_name = input.split_whitespace().next().unwrap_or("");
+                // Use the expanded command name for this check? Or original?
+                // Usually config matches expanded name (actual binary name).
+                // But user might have "alias myvi=vi".
+                // If user ignored "vi", and runs "myvi", it expands to "vi".
+                // So checking expanded command name is correct.
+                let cmd_name = expanded_input.split_whitespace().next().unwrap_or("");
                 let capture_output = !config.ignored_outputs.iter().any(|ignored| ignored == cmd_name);
 
-                match executor::execute_in_pty(input, max_output_size, &pty_writer, &current_env, capture_output, false)
+                match executor::execute_in_pty(&expanded_input, max_output_size, &pty_writer, &current_env, capture_output, false)
                 {
                     Ok(res) => {
                          println!(); // Add newline between command output and next prompt
@@ -119,6 +132,8 @@ pub fn run_repl(
                             prompt: &mut prompt,
                         };
                         
+                         // Log the ORIGINAL input or expanded? 
+                         // Bash logs original. Let's log original.
                          if let Err(e) = command::handle_execution_result(res, start, input, &mut context) {
                              eprintln!("Error processing execution result: {}", e);
                              prompt.set_last_success(false);
@@ -150,4 +165,76 @@ pub fn run_repl(
         }
     }
     Ok(())
+}
+
+fn load_aliases() -> HashMap<String, String> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".into());
+    // Use interactive mode to load aliases from rc files
+    // We use -i to force interactive mode which loads .bashrc/.zshrc
+    // We use -c to execute 'alias' and exit
+    let output = std::process::Command::new(&shell)
+        .arg("-i")
+        .arg("-c")
+        .arg("alias")
+        .output();
+
+    let mut aliases = HashMap::new();
+    if let Ok(output) = output {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let line = line.trim();
+            // Try to strip "alias " prefix (bash), otherwise take whole line (zsh)
+            let content = line.strip_prefix("alias ").unwrap_or(line);
+            
+            if let Some((name, value)) = content.split_once('=') {
+                let name = name.trim();
+                let value = value.trim();
+                
+                // Strip quotes if present
+                let value = if value.len() >= 2 && ((value.starts_with('\'') && value.ends_with('\'')) ||
+                             (value.starts_with('"') && value.ends_with('"'))) {
+                    &value[1..value.len()-1]
+                } else {
+                    value
+                };
+                
+                // Only add if name looks valid (no spaces)
+                if !name.contains(char::is_whitespace) {
+                    aliases.insert(name.to_string(), value.to_string());
+                }
+            }
+        }
+    }
+    aliases
+}
+
+fn expand_alias(input: &str, aliases: &HashMap<String, String>) -> String {
+    let mut current_input = input.to_string();
+    let mut expanded_cmds = std::collections::HashSet::new();
+    
+    // Prevent infinite loops
+    for _ in 0..10 {
+        let input_clone = current_input.clone();
+        let trimmed = input_clone.trim_start();
+        
+        let first_word_end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
+        let first_word = &trimmed[..first_word_end];
+        
+        if first_word.is_empty() {
+            break;
+        }
+
+        if let Some(replacement) = aliases.get(first_word) {
+             if expanded_cmds.contains(first_word) {
+                 break; 
+             }
+             expanded_cmds.insert(first_word.to_string());
+             
+             let rest = &trimmed[first_word_end..];
+             current_input = format!("{}{}", replacement, rest);
+        } else {
+            break;
+        }
+    }
+    current_input
 }
