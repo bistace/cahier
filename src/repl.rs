@@ -72,7 +72,7 @@ pub fn run_repl(
         .with_completer(Box::new(FileCompleter::new(current_env.clone())))
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(ColumnarMenu::default().with_name("completion_menu"))))
         .with_edit_mode(Box::new(edit_mode));
-    let prompt = CahierPrompt::new();
+    let mut prompt = CahierPrompt::new();
 
     let mut jobs: Vec<Job> = Vec::new();
 
@@ -94,9 +94,11 @@ pub fn run_repl(
                     let path = input.strip_prefix("cd ").unwrap().trim();
                     if let Err(e) = handle_cd(path, &current_env) {
                         eprintln!("Error changing directory: {}", e);
+                        prompt.set_last_success(false);
                     } else {
                         // Log cd command as well, though output is empty
                         db.log_entry(input, "", Some(0), 0, None)?;
+                        prompt.set_last_success(true);
                     }
                     continue;
                 }
@@ -106,6 +108,7 @@ pub fn run_repl(
                     for (i, job) in jobs.iter().enumerate() {
                         println!("[{}] {} {}", i + 1, job.command, if i == jobs.len() - 1 { "+" } else { "" });
                     }
+                    prompt.set_last_success(true);
                     continue;
                 }
 
@@ -113,6 +116,7 @@ pub fn run_repl(
                 if input == "fg" || input.starts_with("fg ") {
                     if jobs.is_empty() {
                         eprintln!("fg: current: no such job");
+                        prompt.set_last_success(false);
                         continue;
                     }
 
@@ -125,10 +129,12 @@ pub fn run_repl(
                                  n - 1
                              } else {
                                  eprintln!("fg: {}: no such job", arg);
+                                 prompt.set_last_success(false);
                                  continue;
                              }
                         } else {
                             eprintln!("fg: invalid job specifier");
+                            prompt.set_last_success(false);
                             continue;
                         }
                     };
@@ -140,10 +146,11 @@ pub fn run_repl(
                     let start = Instant::now();
                     match executor::resume_job(job, max_output_size, &pty_writer, &current_env) {
                         Ok(res) => {
-                            handle_execution_result(res, start, &job_command, &db, &mut jobs)?;
+                            handle_execution_result(res, start, &job_command, &db, &mut jobs, &mut prompt)?;
                         }
                         Err(e) => {
                             eprintln!("Error resuming job: {}", e);
+                            prompt.set_last_success(false);
                         }
                     }
                     continue;
@@ -160,18 +167,24 @@ pub fn run_repl(
                 {
                     Ok(res) => {
                          println!(); // Add newline between command output and next prompt
-                         if let Err(e) = handle_execution_result(res, start, input, &db, &mut jobs) {
+                         if let Err(e) = handle_execution_result(res, start, input, &db, &mut jobs, &mut prompt) {
                              eprintln!("Error processing execution result: {}", e);
+                             prompt.set_last_success(false);
                          }
                     }
                     Err(e) => {
                         eprintln!("Execution error: {}", e);
+                        prompt.set_last_success(false);
                     }
                 }
             }
             Ok(Signal::CtrlC) => {
                 // Handle Ctrl+C at prompt - just continue to next prompt
                 println!("^C");
+                // Ctrl+C at prompt is usually considered "abort", so maybe red?
+                // But user didn't run a failing command. Let's keep previous status or default to false?
+                // Bash keeps it 130 usually. Let's set to false for visual feedback of "aborted".
+                prompt.set_last_success(false);
                 continue;
             }
             Ok(Signal::CtrlD) => {
@@ -192,7 +205,8 @@ fn handle_execution_result(
     start_time: Instant,
     input: &str,
     db: &db::Database,
-    jobs: &mut Vec<Job>
+    jobs: &mut Vec<Job>,
+    prompt: &mut CahierPrompt
 ) -> Result<()> {
     match res {
         ExecutionResult::Completed { output, exit_code, output_file } => {
@@ -204,12 +218,19 @@ fn handle_execution_result(
                 duration.as_millis(),
                 output_file.as_deref(),
             )?;
+            
+            if let Some(code) = exit_code {
+                prompt.set_last_success(code == 0);
+            } else {
+                prompt.set_last_success(false);
+            }
         }
         ExecutionResult::Suspended(mut job) => {
              let id = jobs.len() + 1;
              job.id = id;
              println!("\n[{}] Stopped  {}", id, job.command);
              jobs.push(job);
+             prompt.set_last_success(true);
         }
     }
     Ok(())

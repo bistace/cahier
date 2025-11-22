@@ -1,12 +1,19 @@
 use std::borrow::Cow;
 use reedline::{Prompt, PromptEditMode, PromptHistorySearch};
+use crossterm::style::Stylize;
 
 #[derive(Clone)]
-pub struct CahierPrompt;
+pub struct CahierPrompt {
+    last_success: bool,
+}
 
 impl CahierPrompt {
     pub fn new() -> Self {
-        Self
+        Self { last_success: true }
+    }
+
+    pub fn set_last_success(&mut self, success: bool) {
+        self.last_success = success;
     }
 }
 
@@ -21,7 +28,15 @@ impl Prompt for CahierPrompt {
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| ".".to_string());
 
-        Cow::Owned(format!("{}@{}:{}\n", username, hostname, cwd))
+        let prompt_str = format!("{}@{}:{}\n", username, hostname, cwd);
+        
+        let colored_prompt = if self.last_success {
+            prompt_str.green()
+        } else {
+            prompt_str.red()
+        };
+
+        Cow::Owned(colored_prompt.to_string())
     }
 
     fn render_prompt_right(&self) -> Cow<str> {
@@ -45,4 +60,3 @@ impl Prompt for CahierPrompt {
         Cow::Owned(format!("({}reverse-search: {}) ", prefix, history_search.term))
     }
 }
-
