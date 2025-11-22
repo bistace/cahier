@@ -432,8 +432,9 @@ pub fn execute_in_pty(
     let env_dump_path = std::env::temp_dir().join(format!("cahier_env_{}", timestamp));
 
     // Wrap command with trap to capture environment on exit
+    // Set umask 077 to ensure the temporary file is only readable by the owner
     let wrapped_command = format!(
-        "trap 'env -0 > \"{}\"' EXIT; {}",
+        "trap 'umask 077; env -0 > \"{}\"' EXIT; {}",
         env_dump_path.display(),
         command
     );

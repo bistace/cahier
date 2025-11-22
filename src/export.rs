@@ -4,23 +4,21 @@ use crate::db;
 
 /// Generates plain text output containing only commands from the database
 pub fn generate_commands_text(db: &db::Database) -> Result<String> {
-    let entries = db.get_entries()?;
     let mut text = String::new();
-    for entry in entries {
+    db.iterate_entries(|entry| {
         text.push_str(&entry.command);
         text.push('\n');
-    }
+        Ok(())
+    })?;
     Ok(text)
 }
 
 /// Generates markdown-formatted export of command history with outputs
 pub fn generate_markdown(db: &db::Database) -> Result<String> {
-    let entries = db.get_entries()?;
-
     let mut md = String::new();
     md.push_str("# Cahier Export\n\n");
 
-    for entry in entries {
+    db.iterate_entries(|entry| {
         // Format: everything inside a single bash block
         md.push_str("```bash\n");
 
@@ -49,7 +47,8 @@ pub fn generate_markdown(db: &db::Database) -> Result<String> {
         }
 
         md.push_str("```\n\n");
-    }
+        Ok(())
+    })?;
 
     Ok(md)
 }

@@ -93,7 +93,10 @@ impl Database {
         Ok(count)
     }
 
-    pub fn get_entries(&self) -> Result<Vec<Entry>> {
+    pub fn iterate_entries<F>(&self, mut callback: F) -> Result<()>
+    where
+        F: FnMut(Entry) -> Result<()>,
+    {
         let mut stmt = self.conn.prepare(
             "SELECT id, command, output, exit_code, duration_ms, output_file 
              FROM entries ORDER BY id ASC"
@@ -109,11 +112,10 @@ impl Database {
             })
         })?;
 
-        let mut entries = Vec::new();
         for entry in entry_iter {
-            entries.push(entry?);
+            callback(entry?)?;
         }
-        Ok(entries)
+        Ok(())
     }
 }
 
@@ -132,7 +134,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_entries() -> Result<()> {
+    fn test_iterate_entries() -> Result<()> {
         let db = Database::init_memory()?;
         
         // Log multiple entries with different data
@@ -140,7 +142,11 @@ mod tests {
         db.log_entry("cat file.txt", "file content", Some(0), 250, None)?;
         db.log_entry("failing_command", "error output", Some(1), 50, Some(".cahier/outputs/output_123.txt"))?;
         
-        let entries = db.get_entries()?;
+        let mut entries = Vec::new();
+        db.iterate_entries(|entry| {
+            entries.push(entry);
+            Ok(())
+        })?;
         
         assert_eq!(entries.len(), 3);
         
