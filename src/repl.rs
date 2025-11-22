@@ -60,11 +60,13 @@ pub fn run_repl(
     registry.register(Box::new(command::JobsCommand));
     registry.register(Box::new(command::ExitCommand));
     registry.register(Box::new(command::FgCommand));
+    registry.register(Box::new(command::AliasCommand));
+    registry.register(Box::new(command::UnaliasCommand));
 
     // Load aliases from user shell
     println!("Loading aliases...");
-    let aliases = load_aliases();
-    println!("Loaded {} aliases.", aliases.len());
+    let aliases = Arc::new(Mutex::new(load_aliases()));
+    println!("Loaded {} aliases.", aliases.lock().unwrap().len());
 
     loop {
         let sig = line_editor.read_line(&prompt);
@@ -81,7 +83,9 @@ pub fn run_repl(
                 let expanded_input = expand_alias(input, &aliases);
                 
                 // Check for built-in commands
-                let args: Vec<&str> = expanded_input.split_whitespace().collect();
+                let args_owned = shlex::split(&expanded_input).unwrap_or_default();
+                let args: Vec<&str> = args_owned.iter().map(|s| s.as_str()).collect();
+
                 if let Some(cmd_name) = args.first() {
                     if let Some(cmd) = registry.get(cmd_name) {
                         let mut context = CommandContext {
@@ -91,6 +95,7 @@ pub fn run_repl(
                             pty_writer: &pty_writer,
                             max_output_size,
                             prompt: &mut prompt,
+                            aliases: &aliases,
                         };
                         
                         match cmd.execute(&args[1..], &mut context) {
@@ -130,6 +135,7 @@ pub fn run_repl(
                             pty_writer: &pty_writer,
                             max_output_size,
                             prompt: &mut prompt,
+                            aliases: &aliases,
                         };
                         
                          // Log the ORIGINAL input or expanded? 
@@ -208,9 +214,10 @@ fn load_aliases() -> HashMap<String, String> {
     aliases
 }
 
-fn expand_alias(input: &str, aliases: &HashMap<String, String>) -> String {
+fn expand_alias(input: &str, aliases_lock: &Arc<Mutex<HashMap<String, String>>>) -> String {
     let mut current_input = input.to_string();
     let mut expanded_cmds = std::collections::HashSet::new();
+    let aliases = aliases_lock.lock().unwrap();
     
     // Prevent infinite loops
     for _ in 0..10 {

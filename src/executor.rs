@@ -450,6 +450,19 @@ fn monitor_execution(
 
         // Only update current_env if we successfully parsed at least some variables
         if !new_env.is_empty() {
+            // Check for PWD change and sync if needed
+            if let Some(pwd) = new_env.get("PWD") {
+                let current_pwd = std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                
+                if pwd != &current_pwd {
+                    if let Err(e) = std::env::set_current_dir(pwd) {
+                        eprintln!("Failed to sync PWD from shell: {}", e);
+                    }
+                }
+            }
+
             let mut env = current_env.lock().unwrap();
             *env = new_env;
         }

@@ -15,6 +15,7 @@ pub struct CommandContext<'a> {
     pub pty_writer: &'a Arc<Mutex<Option<Box<dyn Write + Send>>>>,
     pub max_output_size: usize,
     pub prompt: &'a mut CahierPrompt,
+    pub aliases: &'a Arc<Mutex<HashMap<String, String>>>,
 }
 
 pub enum CommandResult {
@@ -167,6 +168,74 @@ impl Command for FgCommand {
         Ok(CommandResult::Continue)
     }
 }
+
+pub struct AliasCommand;
+impl Command for AliasCommand {
+    fn name(&self) -> &str { "alias" }
+    fn execute(&self, args: &[&str], context: &mut CommandContext) -> Result<CommandResult> {
+        let start = Instant::now();
+        let mut aliases = context.aliases.lock().unwrap();
+
+        let mut all_success = true;
+        if args.is_empty() {
+            // List all aliases
+            for (name, value) in aliases.iter() {
+                println!("alias {}='{}'", name, value);
+            }
+        } else {
+            // Define new aliases
+            for arg in args {
+                if let Some((name, value)) = arg.split_once('=') {
+                    let name = name.trim().to_string();
+                    let value = value.trim().to_string(); // Simplification: value should be stripped of quotes if present, but shlex handles that
+                    
+                    if !name.is_empty() {
+                        aliases.insert(name, value);
+                    }
+                } else {
+                     // If only name provided, show that alias
+                     if let Some(value) = aliases.get(*arg) {
+                         println!("alias {}='{}'", arg, value);
+                     } else {
+                         eprintln!("alias: {}: not found", arg);
+                         all_success = false;
+                     }
+                }
+            }
+        }
+        
+        context.prompt.set_last_success(all_success);
+        context.prompt.set_last_duration(Some(start.elapsed()));
+        Ok(CommandResult::Continue)
+    }
+}
+
+pub struct UnaliasCommand;
+impl Command for UnaliasCommand {
+    fn name(&self) -> &str { "unalias" }
+    fn execute(&self, args: &[&str], context: &mut CommandContext) -> Result<CommandResult> {
+        let start = Instant::now();
+        let mut aliases = context.aliases.lock().unwrap();
+
+        let mut all_success = true;
+        if args.is_empty() {
+            eprintln!("unalias: usage: unalias name [name ...]");
+            all_success = false;
+        } else {
+            for arg in args {
+                if aliases.remove(*arg).is_none() {
+                    eprintln!("unalias: {}: not found", arg);
+                    all_success = false;
+                }
+            }
+        }
+        
+        context.prompt.set_last_success(all_success);
+        context.prompt.set_last_duration(Some(start.elapsed()));
+        Ok(CommandResult::Continue)
+    }
+}
+
 
 pub fn handle_execution_result(
     res: ExecutionResult,
