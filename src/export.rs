@@ -19,6 +19,13 @@ pub fn generate_markdown(db: &db::Database) -> Result<String> {
     md.push_str("# Cahier Export\n\n");
 
     db.iterate_entries(|entry| {
+        // Annotation (if present)
+        if let Some(annotation) = &entry.annotation {
+            if !annotation.is_empty() {
+                md.push_str(&format!("{}\n\n", annotation));
+            }
+        }
+
         // Format: everything inside a single bash block
         md.push_str("```bash\n");
 
@@ -116,6 +123,28 @@ mod tests {
         assert!(md.contains("```bash\n"));
         let bash_count = md.matches("```bash").count();
         assert_eq!(bash_count, 3); // One for each entry
+        
+        Ok(())
+    }
+
+    #[test]
+    fn test_generate_markdown_with_annotation() -> Result<()> {
+        let db = db::Database::init_memory()?;
+        
+        // Add entry
+        db.log_entry("echo annotated", "output\n", Some(0), 100, None)?;
+        
+        // Get the ID of the entry we just added
+        let entries = db.get_all_entries_ordered()?;
+        let id = entries[0].id;
+        
+        // Add annotation
+        db.update_annotation(id, "This is a test annotation".to_string())?;
+        
+        let md = generate_markdown(&db)?;
+        
+        // Verify annotation is present
+        assert!(md.contains("This is a test annotation"));
         
         Ok(())
     }
