@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossterm::terminal;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize, Child};
 use std::collections::HashMap;
@@ -28,7 +28,6 @@ impl RawModeGuard {
             Ok(_) => Ok(RawModeGuard { active: true }),
             Err(e) => {
                  // Log warning but don't fail. This allows tests to run in non-TTY environments.
-                 // We could verify if e is "No such device or address" but for now simply catching all errors is fine for robustness.
                  eprintln!("Warning: Failed to enable raw mode: {}", e);
                  Ok(RawModeGuard { active: false })
             }
@@ -94,6 +93,10 @@ fn quote_for_trap(path: &str) -> String {
     // We want to produce: umask 077; env -0 > "PATH"
     // PATH needs " and \ escaped.
     let escaped_path = path.replace('\\', "\\\\").replace('"', "\\\"");
+    
+    // Check if env -0 is likely supported or fallback? 
+    // For now we stick to env -0 but wrapped. 
+    // In the future we could detect OS/features.
     let inner_cmd = format!("umask 077; env -0 > \"{}\"", escaped_path);
     
     // Now quote for the single-quoted trap argument
@@ -205,41 +208,14 @@ struct MonitorConfig {
     suppress_output: bool,
 }
 
-/// Monitors the execution of a PTY process (handles I/O and waiting)
-fn monitor_execution(
-    child: Box<dyn Child + Send + Sync>,
-    master: Box<dyn MasterPty + Send>,
-    pty_writer: &Arc<Mutex<Option<Box<dyn Write + Send>>>>,
-    current_env: &Arc<Mutex<HashMap<String, String>>>,
-    config: MonitorConfig,
-) -> Result<ExecutionResult> {
-    #[cfg(not(unix))]
-    let mut child = child;
+// --- Refactored Helper Functions ---
 
-    // Register the writer for Ctrl+C handling
-    let writer = if let Some(w) = config.existing_writer {
-        w
-    } else {
-        master.take_writer()?
-    };
-
-    {
-        let mut writer_opt = pty_writer.lock().unwrap();
-        *writer_opt = Some(writer);
-    }
-
-    let mut reader = master.try_clone_reader()?;
-
-    // Enable raw mode to forward all keystrokes (including Ctrl+X, etc.) to the child
-    let _raw_mode_guard = RawModeGuard::new()?;
-
-    // Flag to signal input thread to stop
-    let finished = Arc::new(AtomicBool::new(false));
-    let finished_clone = finished.clone();
-
-    // Spawn a thread to forward stdin to the PTY master
-    let pty_writer_clone = Arc::clone(pty_writer);
-    let input_thread = thread::spawn(move || {
+/// Spawns a background thread to forward stdin to the PTY master
+fn spawn_input_forwarding_thread(
+    pty_writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    finished: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
         // Set stdin to non-blocking mode
         let _nonblocking_guard = match NonBlockingStdinGuard::new() {
             Ok(g) => g,
@@ -252,7 +228,7 @@ fn monitor_execution(
         let mut stdin = io::stdin();
         let mut buf = [0u8; 1024];
         loop {
-            if finished_clone.load(Ordering::Relaxed) {
+            if finished.load(Ordering::Relaxed) {
                 break;
             }
 
@@ -260,17 +236,19 @@ fn monitor_execution(
                 Ok(0) => break, // EOF
                 Ok(n) => {
                     // Write to the PTY master
-                    if let Ok(mut writer_opt) = pty_writer_clone.lock() {
-                        if let Some(writer) = writer_opt.as_mut() {
-                            if writer.write_all(&buf[..n]).is_err() {
-                                break; // PTY closed
+                    // Handle mutex poisoning by ignoring the error and breaking, or unwrapping if we prefer panicking on poison
+                    match pty_writer.lock() {
+                        Ok(mut writer_opt) => {
+                            if let Some(writer) = writer_opt.as_mut() {
+                                if writer.write_all(&buf[..n]).is_err() {
+                                    break; // PTY closed
+                                }
+                                let _ = writer.flush();
+                            } else {
+                                break; // No writer available
                             }
-                            let _ = writer.flush();
-                        } else {
-                            break; // No writer available
                         }
-                    } else {
-                        break; // Lock failed
+                        Err(_) => break, // Lock failed
                     }
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -280,159 +258,99 @@ fn monitor_execution(
                 Err(_) => break, // Read error
             }
         }
-    });
+    })
+}
 
-    let mut buf = [0u8; 1024];
-    let mut output_handler = OutputHandler::new(config.max_output_size, config.capture_output, config.suppress_output);
-
-    // Ensure env dump file is cleaned up
-    let _env_dump_guard = EnvDumpGuard(config.env_dump_path.clone());
-
-    let mut exit_code = None;
-    let mut suspended = false;
-
+/// Checks the process status without blocking
+fn check_process_status(
+    child: &mut Box<dyn Child + Send + Sync>,
+    suspended: &mut bool
+) -> Option<i32> {
     #[cfg(unix)]
-    // We assume master_fd is valid on Unix. If it's somehow not (which shouldn't happen with MasterPty on unix), we panic.
-    let master_fd = master.as_raw_fd().expect("Failed to get raw fd from PTY master");
-
-    // Loop to check status and read
-    loop {
-        // 1. Check process status (non-blocking)
-        #[cfg(unix)]
-        if !suspended && exit_code.is_none() {
-            if let Some(pid_val) = child.process_id() {
-                 let pid = Pid::from_raw(pid_val as i32);
-                 match waitpid(pid, Some(WaitPidFlag::WNOHANG | WaitPidFlag::WUNTRACED)) {
-                     Ok(WaitStatus::Stopped(_, _)) => {
-                         suspended = true;
-                         break;
-                     }
-                     Ok(WaitStatus::Exited(_, code)) => {
-                         exit_code = Some(code);
-                     }
-                     Ok(WaitStatus::Signaled(_, sig, _)) => {
-                         exit_code = Some(128 + (sig as i32));
-                     }
-                     Err(nix::errno::Errno::ECHILD) => {
-                         // Process likely gone, maybe we missed the signal or it was reaped elsewhere?
-                         if exit_code.is_none() { exit_code = Some(1); }
-                     }
-                     _ => {}
+    {
+        if *suspended {
+            return None;
+        }
+        if let Some(pid_val) = child.process_id() {
+             let pid = Pid::from_raw(pid_val as i32);
+             match waitpid(pid, Some(WaitPidFlag::WNOHANG | WaitPidFlag::WUNTRACED)) {
+                 Ok(WaitStatus::Stopped(_, _)) => {
+                     *suspended = true;
+                     None
                  }
-            }
-        }
-        
-        #[cfg(not(unix))]
-        if exit_code.is_none() {
-             // Fallback for non-unix: just check if process is running? 
-             // child.try_wait() returns Ok(Some(status)) if exited.
-             if let Ok(Some(status)) = child.try_wait() {
-                 exit_code = if status.success() { Some(0) } else { Some(1) };
+                 Ok(WaitStatus::Exited(_, code)) => Some(code),
+                 Ok(WaitStatus::Signaled(_, sig, _)) => Some(128 + (sig as i32)),
+                 Err(nix::errno::Errno::ECHILD) => Some(1), // Process likely gone
+                 _ => None
              }
+        } else {
+            None
         }
-
-        // 2. Poll for data with timeout
-        #[cfg(unix)]
-        {
-            // SAFETY: master_fd is valid and kept open by master, so borrowing it is safe.
-            let borrowed_fd = unsafe { std::os::unix::io::BorrowedFd::borrow_raw(master_fd) };
-            let mut fds = [nix::poll::PollFd::new(borrowed_fd, nix::poll::PollFlags::POLLIN)];
-            match nix::poll::poll(&mut fds, nix::poll::PollTimeout::from(50u16)) {
-                Ok(_) => {
-                     if let Some(revents) = fds[0].revents() {
-                         if revents.contains(nix::poll::PollFlags::POLLIN) || revents.contains(nix::poll::PollFlags::POLLHUP) || revents.contains(nix::poll::PollFlags::POLLERR) {
-                             // Try reading
-                             match reader.read(&mut buf) {
-                                 Ok(0) => break, // EOF
-                                 Ok(n) => {
-                                     let data = &buf[..n];
-
-                                     // Process output (capture/print)
-                                     if let Err(e) = output_handler.handle_data(data) {
-                                         eprintln!("Error handling output: {}", e);
-                                     }
-                                 }
-                                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                                     // Continue
-                                 }
-                                 Err(_) => break,
-                             }
-                         }
-                     }
-                }
-                Err(nix::errno::Errno::EINTR) => continue,
-                Err(_) => break,
-            }
-        }
-
-        #[cfg(not(unix))]
-        {
-            // Blocking read fallback for non-unix
-            match reader.read(&mut buf) {
-                 Ok(0) => break,
-                 Ok(n) => {
-                      let data = &buf[..n];
-                      if let Err(e) = output_handler.handle_data(data) {
-                          eprintln!("Error handling output: {}", e);
-                      }
-                 }
-                 Err(_) => break,
-            }
-            if exit_code.is_some() { break; }
-        }
-    }
-
-    // Ensure exit code is set if we broke out due to EOF but waitpid didn't catch it yet
-    if exit_code.is_none() && !suspended {
-         #[cfg(unix)]
-         {
-             if let Some(pid_val) = child.process_id() {
-                 let pid = Pid::from_raw(pid_val as i32);
-                 // Wait blocking now since we are done reading
-                 match waitpid(pid, None) {
-                     Ok(WaitStatus::Exited(_, code)) => {
-                         exit_code = Some(code);
-                     }
-                     Ok(WaitStatus::Signaled(_, sig, _)) => {
-                         exit_code = Some(128 + (sig as i32));
-                     }
-                     _ => {}
-                 }
-             }
-         }
-         #[cfg(not(unix))]
-         {
-             if let Ok(status) = child.wait() {
-                 exit_code = if status.success() { Some(0) } else { Some(1) };
-             }
-         }
     }
     
-    // Signal input thread to stop
-    finished.store(true, Ordering::Relaxed);
+    #[cfg(not(unix))]
+    {
+         if let Ok(Some(status)) = child.try_wait() {
+             if status.success() { Some(0) } else { Some(1) }
+         } else {
+             None
+         }
+    }
+}
 
-    // The input thread will stop naturally when it sees the flag or writer is cleared.
-    let _ = input_thread.join();
-
-    // Ensure we clean up pty_writer and retrieve it if suspended
-    let retrieved_writer = {
-        let mut writer_opt = pty_writer.lock().unwrap();
-        writer_opt.take()
-    };
-
-    if suspended {
-        return Ok(ExecutionResult::Suspended(Job {
-            id: 0, // ID assigned by caller
-            command: config.command,
-            child,
-            master,
-            writer: retrieved_writer,
-            env_dump_path: config.env_dump_path,
-        }));
+/// Polls the PTY master for output data
+fn poll_pty_output(
+    master_fd: i32,
+    reader: &mut Box<dyn Read + Send>,
+    output_handler: &mut OutputHandler,
+    buf: &mut [u8],
+) -> Result<bool> { // returns true if EOF
+    #[cfg(unix)]
+    {
+        // SAFETY: master_fd is valid and kept open by master, so borrowing it is safe.
+        let borrowed_fd = unsafe { std::os::unix::io::BorrowedFd::borrow_raw(master_fd) };
+        let mut fds = [nix::poll::PollFd::new(borrowed_fd, nix::poll::PollFlags::POLLIN)];
+        match nix::poll::poll(&mut fds, nix::poll::PollTimeout::from(50u16)) {
+            Ok(_) => {
+                 if let Some(revents) = fds[0].revents() {
+                     if revents.contains(nix::poll::PollFlags::POLLIN) || revents.contains(nix::poll::PollFlags::POLLHUP) || revents.contains(nix::poll::PollFlags::POLLERR) {
+                         match reader.read(buf) {
+                             Ok(0) => return Ok(true), // EOF
+                             Ok(n) => {
+                                 output_handler.handle_data(&buf[..n])?;
+                             }
+                             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                             Err(e) => return Err(e.into()),
+                         }
+                     }
+                 }
+            }
+            Err(nix::errno::Errno::EINTR) => {},
+            Err(e) => return Err(e.into()),
+        }
     }
 
-    // Read and parse the environment dump
-    if let Ok(env_data) = fs::read(&config.env_dump_path) {
+    #[cfg(not(unix))]
+    {
+        // Blocking read fallback for non-unix
+        match reader.read(buf) {
+             Ok(0) => return Ok(true),
+             Ok(n) => {
+                  output_handler.handle_data(&buf[..n])?;
+             }
+             Err(e) => return Err(e.into()),
+        }
+    }
+    
+    Ok(false)
+}
+
+/// Parses the environment dump file and updates current_env
+fn process_env_dump(
+    path: &PathBuf, 
+    current_env: &Arc<Mutex<HashMap<String, String>>>
+) {
+    if let Ok(env_data) = fs::read(path) {
         // Parse null-terminated environment variables into a temporary HashMap
         let mut new_env = HashMap::new();
         for entry in env_data.split(|&b| b == 0) {
@@ -463,10 +381,137 @@ fn monitor_execution(
                 }
             }
 
-            let mut env = current_env.lock().unwrap();
-            *env = new_env;
+            if let Ok(mut env) = current_env.lock() {
+                *env = new_env;
+            } else {
+                eprintln!("Failed to lock current_env for update");
+            }
         }
     }
+}
+
+
+/// Monitors the execution of a PTY process (handles I/O and waiting)
+fn monitor_execution(
+    mut child: Box<dyn Child + Send + Sync>,
+    master: Box<dyn MasterPty + Send>,
+    pty_writer: &Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    current_env: &Arc<Mutex<HashMap<String, String>>>,
+    config: MonitorConfig,
+) -> Result<ExecutionResult> {
+    // Register the writer for Ctrl+C handling
+    let writer = if let Some(w) = config.existing_writer {
+        w
+    } else {
+        master.take_writer().context("Failed to take writer from master PTY")?
+    };
+
+    {
+        let mut writer_opt = pty_writer.lock().map_err(|_| anyhow::anyhow!("Failed to lock pty_writer"))?;
+        *writer_opt = Some(writer);
+    }
+
+    let mut reader = master.try_clone_reader().context("Failed to clone reader from master PTY")?;
+
+    // Enable raw mode to forward all keystrokes (including Ctrl+X, etc.) to the child
+    let _raw_mode_guard = RawModeGuard::new()?;
+
+    // Flag to signal input thread to stop
+    let finished = Arc::new(AtomicBool::new(false));
+    
+    // Spawn a thread to forward stdin to the PTY master
+    let input_thread = spawn_input_forwarding_thread(Arc::clone(pty_writer), Arc::clone(&finished));
+
+    let mut buf = [0u8; 1024];
+    let mut output_handler = OutputHandler::new(config.max_output_size, config.capture_output, config.suppress_output);
+
+    // Ensure env dump file is cleaned up
+    let _env_dump_guard = EnvDumpGuard(config.env_dump_path.clone());
+
+    let mut exit_code = None;
+    let mut suspended = false;
+
+    #[cfg(unix)]
+    // We assume master_fd is valid on Unix.
+    let master_fd = master.as_raw_fd().ok_or_else(|| anyhow::anyhow!("Failed to get raw fd from PTY master"))?;
+    #[cfg(not(unix))]
+    let master_fd = 0; // Dummy for non-unix
+
+    // Loop to check status and read
+    loop {
+        // 1. Check process status (non-blocking)
+        if let Some(code) = check_process_status(&mut child, &mut suspended) {
+            exit_code = Some(code);
+        }
+        
+        if suspended {
+            break;
+        }
+
+        // 2. Poll for data with timeout
+        let eof = poll_pty_output(master_fd, &mut reader, &mut output_handler, &mut buf)?;
+        
+        if eof {
+            break;
+        }
+        
+        if exit_code.is_some() {
+             // Continue reading until EOF? 
+             // Usually if exit_code is set, we expect EOF soon. 
+             // But we should loop until EOF if possible to get all output.
+             // However, simplistic approach is break if we have exit code and no data was ready in poll (timeout).
+             // The poll timeout allows us to drain remaining buffer.
+             // Let's rely on poll returning eof or timeout.
+        }
+    }
+
+    // Ensure exit code is set if we broke out due to EOF but waitpid didn't catch it yet
+    if exit_code.is_none() && !suspended {
+         #[cfg(unix)]
+         {
+             if let Some(pid_val) = child.process_id() {
+                 let pid = Pid::from_raw(pid_val as i32);
+                 // Wait blocking now since we are done reading
+                 match waitpid(pid, None) {
+                     Ok(WaitStatus::Exited(_, code)) => { exit_code = Some(code); }
+                     Ok(WaitStatus::Signaled(_, sig, _)) => { exit_code = Some(128 + (sig as i32)); }
+                     _ => {}
+                 }
+             }
+         }
+         #[cfg(not(unix))]
+         {
+             if let Ok(status) = child.wait() {
+                 exit_code = if status.success() { Some(0) } else { Some(1) };
+             }
+         }
+    }
+    
+    // Signal input thread to stop
+    finished.store(true, Ordering::Relaxed);
+
+    // The input thread will stop naturally when it sees the flag or writer is cleared.
+    let _ = input_thread.join();
+
+    // Ensure we clean up pty_writer and retrieve it if suspended
+    let retrieved_writer = {
+        let mut writer_opt = pty_writer.lock().map_err(|_| anyhow::anyhow!("Failed to lock pty_writer"))?;
+        writer_opt.take()
+    };
+
+    if suspended {
+        return Ok(ExecutionResult::Suspended(Job {
+            id: 0, // ID assigned by caller
+            command: config.command,
+            child,
+            master,
+            writer: retrieved_writer,
+            env_dump_path: config.env_dump_path,
+        }));
+    }
+
+    // Read and parse the environment dump
+    process_env_dump(&config.env_dump_path, current_env);
 
     let (output, output_file) = output_handler.finalize();
 
@@ -495,7 +540,7 @@ pub fn execute_in_pty(
         cols,
         pixel_width: 0,
         pixel_height: 0,
-    })?;
+    }).context("Failed to open PTY")?;
 
     // Use the user's shell or default to sh
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".into());
@@ -517,7 +562,7 @@ pub fn execute_in_pty(
     // Clear and set environment from current_env
     cmd.env_clear();
     {
-        let env = current_env.lock().unwrap();
+        let env = current_env.lock().map_err(|_| anyhow::anyhow!("Failed to lock current_env"))?;
         for (key, value) in env.iter() {
             cmd.env(key, value);
         }
@@ -528,7 +573,7 @@ pub fn execute_in_pty(
         cmd.cwd(path);
     }
 
-    let child = pair.slave.spawn_command(cmd)?;
+    let child = pair.slave.spawn_command(cmd).context("Failed to spawn command in PTY")?;
 
     // Drop slave to close the write-end of the pipe in this process
     drop(pair.slave);
@@ -635,5 +680,28 @@ mod tests {
              }
              _ => panic!("Expected completion"),
         }
+    }
+
+    #[test]
+    fn test_quote_for_trap() {
+        let path = "/tmp/test path/env";
+        let quoted = quote_for_trap(path);
+        // Should produce: 'umask 077; env -0 > "/tmp/test path/env"'
+        assert_eq!(quoted, "'umask 077; env -0 > \"/tmp/test path/env\"'");
+
+        let path_with_quote = "/tmp/test\"path/env";
+        let quoted_quote = quote_for_trap(path_with_quote);
+        // Should escape internal quote: " -> \"
+        assert_eq!(quoted_quote, "'umask 077; env -0 > \"/tmp/test\\\"path/env\"'");
+
+        let path_with_single_quote = "/tmp/test'path";
+        let quoted_single = quote_for_trap(path_with_single_quote);
+        // Single quote in single quoted string needs ' -> '\''
+        // umask 077; env -0 > "/tmp/test'path"
+        // Wrapped in single quotes: '... "/tmp/test'\''path" ...'
+        // Actually the path is inside double quotes in the inner command:
+        // inner: umask 077; env -0 > "/tmp/test'path"
+        // outer: 'umask 077; env -0 > "/tmp/test'\''path"'
+        assert_eq!(quoted_single, "'umask 077; env -0 > \"/tmp/test'\\''path\"'");
     }
 }

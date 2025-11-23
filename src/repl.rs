@@ -69,7 +69,7 @@ pub fn run_repl(
     // Load aliases from user shell
     println!("Loading aliases...");
     let aliases = Arc::new(Mutex::new(load_aliases()));
-    println!("Loaded {} aliases.", aliases.lock().unwrap().len());
+    println!("Loaded {} aliases.", aliases.lock().map(|a| a.len()).unwrap_or(0));
 
     loop {
         let sig = line_editor.read_line(&prompt);
@@ -232,7 +232,8 @@ fn load_aliases() -> HashMap<String, String> {
 fn expand_alias(input: &str, aliases_lock: &Arc<Mutex<HashMap<String, String>>>) -> String {
     let mut current_input = input.to_string();
     let mut expanded_cmds = std::collections::HashSet::new();
-    let aliases = aliases_lock.lock().unwrap();
+    // Handle poisoned lock by recovering the inner data
+    let aliases = aliases_lock.lock().unwrap_or_else(|e| e.into_inner());
     
     // Prevent infinite loops
     for _ in 0..10 {
