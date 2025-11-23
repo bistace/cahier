@@ -13,7 +13,7 @@ use std::io::{self, Stdout};
 
 use crate::db::{Database, Entry, Direction as DbDirection};
 
-pub fn run(db: Database) -> Result<()> {
+pub fn run(db: Database) -> Result<Option<String>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -43,6 +43,7 @@ struct App<'a> {
     input_mode: InputMode,
     input_buffer: TextArea<'a>,
     fullscreen_scroll: u16,
+    selected_command: Option<String>,
     // For popup messages or confirmation if needed, sticking to simple for now
 }
 
@@ -53,7 +54,7 @@ enum InputMode {
     ConfirmDelete,
 }
 
-fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, db: Database) -> Result<()> {
+fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, db: Database) -> Result<Option<String>> {
     let mut app = App::new(db)?;
 
     loop {
@@ -91,6 +92,14 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, db: Database) -> R
                             }
                         },
                         KeyCode::Char('a') => app.start_editing_annotation(),
+                        KeyCode::Char('s') => {
+                            if let Some(i) = app.list_state.selected() {
+                                if let Some(entry) = app.entries.get(i) {
+                                    app.selected_command = Some(entry.command.clone());
+                                    app.should_quit = true;
+                                }
+                            }
+                        },
                         KeyCode::Enter => {
                             app.toggle_output_fullscreen();
                             // Clear terminal buffer when entering fullscreen to remove artifacts
@@ -119,7 +128,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, db: Database) -> R
         }
 
         if app.should_quit {
-            return Ok(());
+            return Ok(app.selected_command);
         }
     }
 }
@@ -146,6 +155,7 @@ impl<'a> App<'a> {
             input_mode: InputMode::Normal,
             input_buffer: textarea,
             fullscreen_scroll: 0,
+            selected_command: None,
         })
     }
 
@@ -345,7 +355,7 @@ fn render_main_layout(f: &mut Frame, app: &mut App) {
     }
     
     // Status bar
-    let status_text = "j/k: Navigate | J/K: Move | d: Delete | a: Annotate | Enter: Fullscreen | q: Quit";
+    let status_text = "j/k: Navigate | J/K: Move | d: Delete | a: Annotate | s: Send to REPL | Enter: Fullscreen | q: Quit";
     let status = Paragraph::new(status_text)
         .style(Style::default().bg(Color::Blue).fg(Color::White));
     f.render_widget(status, chunks[1]);

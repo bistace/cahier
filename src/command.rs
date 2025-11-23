@@ -17,6 +17,8 @@ pub struct CommandContext<'a> {
     pub prompt: &'a mut CahierPrompt,
     pub aliases: &'a Arc<Mutex<HashMap<String, String>>>,
     pub should_log: bool,
+    pub db_path: &'a str,
+    pub next_command: &'a mut Option<String>,
 }
 
 pub enum CommandResult {
@@ -262,6 +264,31 @@ impl Command for UnaliasCommand {
         }
         
         context.prompt.set_last_success(all_success);
+        context.prompt.set_last_duration(Some(start.elapsed()));
+        Ok(CommandResult::Continue)
+    }
+}
+
+pub struct EditCommand;
+impl Command for EditCommand {
+    fn name(&self) -> &str { "edit" }
+    fn execute(&self, _args: &[&str], context: &mut CommandContext) -> Result<CommandResult> {
+        let start = Instant::now();
+        
+        // Open a new connection for the TUI to avoid conflict or ownership issues,
+        // and because TUI takes ownership of the DB instance in its current signature.
+        let db = db::Database::init(context.db_path)?;
+        
+        if let Some(cmd) = crate::tui::run(db)? {
+            *context.next_command = Some(cmd);
+        }
+        
+        // Force refresh of current context db connection if needed? 
+        // The current architecture passes &db reference to commands, so we can't easily replace it.
+        // However, SQLite handles concurrent connections to the same file fine.
+        // The TUI might have modified the DB, but since we query fresh on every command usually, it should be fine.
+        
+        context.prompt.set_last_success(true);
         context.prompt.set_last_duration(Some(start.elapsed()));
         Ok(CommandResult::Continue)
     }

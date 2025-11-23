@@ -62,16 +62,24 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some(Commands::Edit) => {
-            tui::run(db)
+            if let Some(cmd) = tui::run(db)? {
+                // User selected a command to edit in REPL
+                // Re-initialize database because tui::run consumed it
+                let db = db::Database::init(DB_FILENAME).context("Failed to re-initialize database")?;
+                let pty_writer = setup_signal_handler()?;
+                repl::run_repl(db, DEFAULT_MAX_OUTPUT_SIZE, pty_writer, config, Some(cmd))
+            } else {
+                Ok(())
+            }
         }
         Some(Commands::Start { max_output_size }) => {
             let pty_writer = setup_signal_handler()?;
-            repl::run_repl(db, max_output_size, pty_writer, config)
+            repl::run_repl(db, max_output_size, pty_writer, config, None)
         }
         None => {
             // Default behavior: start REPL with default max_output_size
             let pty_writer = setup_signal_handler()?;
-            repl::run_repl(db, DEFAULT_MAX_OUTPUT_SIZE, pty_writer, config)
+            repl::run_repl(db, DEFAULT_MAX_OUTPUT_SIZE, pty_writer, config, None)
         }
     }
 }

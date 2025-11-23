@@ -1,5 +1,5 @@
 use anyhow::Result;
-use reedline::{ColumnarMenu, Emacs, FileBackedHistory, KeyCode, KeyModifiers, Reedline, ReedlineEvent, ReedlineMenu, Signal};
+use reedline::{ColumnarMenu, Emacs, FileBackedHistory, HistoryItem, KeyCode, KeyModifiers, Reedline, ReedlineEvent, ReedlineMenu, Signal};
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
@@ -26,9 +26,17 @@ pub fn run_repl(
     max_output_size: usize,
     pty_writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
     config: Config,
+    initial_command: Option<String>,
 ) -> Result<()> {
     println!("Cahier started.");
-    println!("Database: ./{}", DB_FILENAME);
+    
+    // Resolve absolute path to database to ensure we can always connect to it
+    // even after changing directories
+    let db_path_buf = std::fs::canonicalize(DB_FILENAME)
+        .unwrap_or_else(|_| std::path::PathBuf::from(DB_FILENAME));
+    let db_path_str = db_path_buf.to_string_lossy().to_string();
+    
+    println!("Database: {}", db_path_str);
     println!("Max output size: {} bytes", max_output_size);
 
     let history = Box::new(
@@ -55,6 +63,7 @@ pub fn run_repl(
     registry.register(Box::new(command::FgCommand));
     registry.register(Box::new(command::AliasCommand));
     registry.register(Box::new(command::UnaliasCommand));
+    registry.register(Box::new(command::EditCommand));
 
     // Load aliases from user shell if configured
     let aliases_map = if config.load_aliases {
@@ -83,6 +92,17 @@ pub fn run_repl(
     let mut prompt = CahierPrompt::new();
 
     let mut jobs: Vec<Job> = Vec::new();
+    
+    // Add initial command to history if provided
+    if let Some(cmd) = initial_command {
+        let _ = line_editor.history_mut().save(HistoryItem::from_command_line(&cmd));
+        // Also sync history to disk to ensure it persists
+        let _ = line_editor.sync_history();
+        // Try to run edit commands
+        line_editor.run_edit_commands(&[reedline::EditCommand::InsertString(cmd)]);
+    }
+    
+    let mut next_command: Option<String> = None;
     
     loop {
         let sig = line_editor.read_line(&prompt);
@@ -123,11 +143,18 @@ pub fn run_repl(
                             prompt: &mut prompt,
                             aliases: &aliases,
                             should_log,
+                            db_path: &db_path_str,
+                            next_command: &mut next_command,
                         };
                         
                         match cmd.execute(&args[1..], &mut context) {
                             Ok(CommandResult::Exit) => break,
                             Ok(CommandResult::Continue) => {
+                                if let Some(cmd) = next_command.take() {
+                                    let _ = line_editor.history_mut().save(HistoryItem::from_command_line(&cmd));
+                                    let _ = line_editor.sync_history();
+                                    line_editor.run_edit_commands(&[reedline::EditCommand::InsertString(cmd)]);
+                                }
                                 println!();
                                 continue;
                             }
@@ -163,6 +190,8 @@ pub fn run_repl(
                             prompt: &mut prompt,
                             aliases: &aliases,
                             should_log,
+                            db_path: &db_path_str,
+                            next_command: &mut next_command,
                         };
                         
                          // Log the ORIGINAL input
@@ -194,6 +223,15 @@ pub fn run_repl(
                 eprintln!("Error: {:?}", e);
                 break;
             }
+        }
+
+        // Handle pending command from edit
+        if let Some(cmd) = next_command.take() {
+            let _ = line_editor.history_mut().save(HistoryItem::from_command_line(&cmd));
+             // Also sync history to disk to ensure it persists
+            let _ = line_editor.sync_history();
+            // Inject the command into the next prompt
+            line_editor.run_edit_commands(&[reedline::EditCommand::InsertString(cmd)]);
         }
     }
     Ok(())
