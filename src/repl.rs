@@ -3,8 +3,9 @@ use reedline::{ColumnarMenu, Emacs, FileBackedHistory, KeyCode, KeyModifiers, Re
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use crate::alias;
 use crate::common::{HISTORY_FILENAME, MAX_HISTORY_ENTRIES, DB_FILENAME};
 use crate::completion::FileCompleter;
 use crate::config::Config;
@@ -66,10 +67,16 @@ pub fn run_repl(
     registry.register(Box::new(command::AliasCommand));
     registry.register(Box::new(command::UnaliasCommand));
 
-    // Load aliases from user shell
-    println!("Loading aliases...");
-    let aliases = Arc::new(Mutex::new(load_aliases()));
-    println!("Loaded {} aliases.", aliases.lock().map(|a| a.len()).unwrap_or(0));
+    // Load aliases from user shell if configured
+    let aliases_map = if config.load_aliases {
+        println!("Loading aliases...");
+        let map = alias::load_aliases_from_shell(Duration::from_secs(2));
+        println!("Loaded {} aliases.", map.len());
+        map
+    } else {
+        HashMap::new()
+    };
+    let aliases = Arc::new(Mutex::new(aliases_map));
 
     loop {
         let sig = line_editor.read_line(&prompt);
@@ -83,7 +90,7 @@ pub fn run_repl(
                 let start_total = Instant::now();
 
                 // Expand aliases
-                let expanded_input_raw = expand_alias(input, &aliases);
+                let expanded_input_raw = alias::expand_alias(input, &aliases);
                 
                 // Check for nr prefix to skip logging
                 let (expanded_input, should_log) = {
@@ -129,11 +136,7 @@ pub fn run_repl(
                 let start = Instant::now();
 
                 // Check if command should have output captured
-                // Use the expanded command name for this check? Or original?
-                // Usually config matches expanded name (actual binary name).
-                // But user might have "alias myvi=vi".
-                // If user ignored "vi", and runs "myvi", it expands to "vi".
-                // So checking expanded command name is correct.
+                // Use the expanded command name for this check
                 let cmd_name = expanded_input.split_whitespace().next().unwrap_or("");
                 let capture_output = !config.ignored_outputs.iter().any(|ignored| ignored == cmd_name);
 
@@ -153,8 +156,7 @@ pub fn run_repl(
                             should_log,
                         };
                         
-                         // Log the ORIGINAL input or expanded? 
-                         // Bash logs original. Let's log original.
+                         // Log the ORIGINAL input
                          if let Err(e) = command::handle_execution_result(res, start, input, &mut context) {
                              eprintln!("Error processing execution result: {}", e);
                              prompt.set_last_success(false);
@@ -186,78 +188,4 @@ pub fn run_repl(
         }
     }
     Ok(())
-}
-
-fn load_aliases() -> HashMap<String, String> {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".into());
-    // Use interactive mode to load aliases from rc files
-    // We use -i to force interactive mode which loads .bashrc/.zshrc
-    // We use -c to execute 'alias' and exit
-    let output = std::process::Command::new(&shell)
-        .arg("-i")
-        .arg("-c")
-        .arg("alias")
-        .output();
-
-    let mut aliases = HashMap::new();
-    if let Ok(output) = output {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            let line = line.trim();
-            // Try to strip "alias " prefix (bash), otherwise take whole line (zsh)
-            let content = line.strip_prefix("alias ").unwrap_or(line);
-            
-            if let Some((name, value)) = content.split_once('=') {
-                let name = name.trim();
-                let value = value.trim();
-                
-                // Strip quotes if present
-                let value = if value.len() >= 2 && ((value.starts_with('\'') && value.ends_with('\'')) ||
-                             (value.starts_with('"') && value.ends_with('"'))) {
-                    &value[1..value.len()-1]
-                } else {
-                    value
-                };
-                
-                // Only add if name looks valid (no spaces)
-                if !name.contains(char::is_whitespace) {
-                    aliases.insert(name.to_string(), value.to_string());
-                }
-            }
-        }
-    }
-    aliases
-}
-
-fn expand_alias(input: &str, aliases_lock: &Arc<Mutex<HashMap<String, String>>>) -> String {
-    let mut current_input = input.to_string();
-    let mut expanded_cmds = std::collections::HashSet::new();
-    // Handle poisoned lock by recovering the inner data
-    let aliases = aliases_lock.lock().unwrap_or_else(|e| e.into_inner());
-    
-    // Prevent infinite loops
-    for _ in 0..10 {
-        let input_clone = current_input.clone();
-        let trimmed = input_clone.trim_start();
-        
-        let first_word_end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
-        let first_word = &trimmed[..first_word_end];
-        
-        if first_word.is_empty() {
-            break;
-        }
-
-        if let Some(replacement) = aliases.get(first_word) {
-             if expanded_cmds.contains(first_word) {
-                 break; 
-             }
-             expanded_cmds.insert(first_word.to_string());
-             
-             let rest = &trimmed[first_word_end..];
-             current_input = format!("{}{}", replacement, rest);
-        } else {
-            break;
-        }
-    }
-    current_input
 }

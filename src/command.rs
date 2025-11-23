@@ -76,8 +76,13 @@ impl Command for CdCommand {
         } else {
             if let Ok(cwd) = std::env::current_dir() {
                 if let Some(cwd_str) = cwd.to_str() {
-                    let mut env = context.current_env.lock().unwrap();
-                    env.insert("PWD".to_string(), cwd_str.to_string());
+                    // Use robust locking
+                    match context.current_env.lock() {
+                        Ok(mut env) => {
+                             env.insert("PWD".to_string(), cwd_str.to_string());
+                        },
+                        Err(_) => eprintln!("Warning: Failed to lock env to update PWD"),
+                    }
                 }
             }
             
@@ -177,12 +182,14 @@ impl Command for AliasCommand {
     fn name(&self) -> &str { "alias" }
     fn execute(&self, args: &[&str], context: &mut CommandContext) -> Result<CommandResult> {
         let start = Instant::now();
-        let mut aliases = context.aliases.lock().unwrap();
+        
+        let mut aliases_guard = context.aliases.lock()
+            .map_err(|_| anyhow::anyhow!("Failed to lock aliases registry"))?;
 
         let mut all_success = true;
         if args.is_empty() {
             // List all aliases
-            for (name, value) in aliases.iter() {
+            for (name, value) in aliases_guard.iter() {
                 println!("alias {}='{}'", name, value);
             }
         } else {
@@ -193,11 +200,11 @@ impl Command for AliasCommand {
                     let value = value.trim().to_string(); // Simplification: value should be stripped of quotes if present, but shlex handles that
                     
                     if !name.is_empty() {
-                        aliases.insert(name, value);
+                        aliases_guard.insert(name, value);
                     }
                 } else {
                      // If only name provided, show that alias
-                     if let Some(value) = aliases.get(*arg) {
+                     if let Some(value) = aliases_guard.get(*arg) {
                          println!("alias {}='{}'", arg, value);
                      } else {
                          eprintln!("alias: {}: not found", arg);
@@ -218,7 +225,8 @@ impl Command for UnaliasCommand {
     fn name(&self) -> &str { "unalias" }
     fn execute(&self, args: &[&str], context: &mut CommandContext) -> Result<CommandResult> {
         let start = Instant::now();
-        let mut aliases = context.aliases.lock().unwrap();
+        let mut aliases_guard = context.aliases.lock()
+            .map_err(|_| anyhow::anyhow!("Failed to lock aliases registry"))?;
 
         let mut all_success = true;
         if args.is_empty() {
@@ -226,7 +234,7 @@ impl Command for UnaliasCommand {
             all_success = false;
         } else {
             for arg in args {
-                if aliases.remove(*arg).is_none() {
+                if aliases_guard.remove(*arg).is_none() {
                     eprintln!("unalias: {}: not found", arg);
                     all_success = false;
                 }

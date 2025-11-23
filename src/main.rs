@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
@@ -35,11 +35,11 @@ enum Commands {
 
 fn main() -> Result<()> {
     // Ensure cahier directory exists
-    std::fs::create_dir_all(CAHIER_DIR)?;
+    std::fs::create_dir_all(CAHIER_DIR).context("Failed to create cahier directory")?;
 
     let args = Args::parse();
-    let db = db::Database::init(DB_FILENAME)?;
-    let config = config::Config::load()?;
+    let db = db::Database::init(DB_FILENAME).context("Failed to initialize database")?;
+    let config = config::Config::load().context("Failed to load configuration")?;
 
     match args.command {
         Some(Commands::Export {
@@ -47,13 +47,13 @@ fn main() -> Result<()> {
             only_commands,
         }) => {
             let content = if only_commands {
-                export::generate_commands_text(&db)?
+                export::generate_commands_text(&db).context("Failed to generate commands export")?
             } else {
-                export::generate_markdown(&db)?
+                export::generate_markdown(&db).context("Failed to generate markdown export")?
             };
 
             if let Some(path) = output {
-                std::fs::write(path, content)?;
+                std::fs::write(path, content).context("Failed to write export output")?;
             } else {
                 println!("{}", content);
             }
@@ -88,7 +88,7 @@ fn setup_signal_handler() -> Result<PtyWriter> {
             }
             // If no writer, do nothing (at prompt)
         }
-    })?;
+    }).context("Failed to set Ctrl+C handler")?;
 
     Ok(pty_writer)
 }

@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 
 pub struct Database {
@@ -17,14 +17,14 @@ pub struct Entry {
 
 impl Database {
     pub fn init(path: &str) -> Result<Self> {
-        let conn = Connection::open(path)?;
-        Self::setup_schema(&conn)?;
+        let conn = Connection::open(path).context("Failed to open database")?;
+        Self::setup_schema(&conn).context("Failed to setup schema")?;
         Ok(Self { conn })
     }
 
     #[cfg(test)]
     pub fn init_memory() -> Result<Self> {
-        let conn = Connection::open_in_memory()?;
+        let conn = Connection::open_in_memory().context("Failed to open in-memory database")?;
         Self::setup_schema(&conn)?;
         Ok(Self { conn })
     }
@@ -40,7 +40,7 @@ impl Database {
                 output_file TEXT
             )",
             [],
-        )?;
+        ).context("Failed to create entries table")?;
         
         // Migrate existing table if output_file column doesn't exist
         let column_exists: Result<i32, _> = conn.query_row(
@@ -50,7 +50,7 @@ impl Database {
         );
         
         if let Ok(0) = column_exists {
-            conn.execute("ALTER TABLE entries ADD COLUMN output_file TEXT", [])?;
+            conn.execute("ALTER TABLE entries ADD COLUMN output_file TEXT", []).context("Failed to add output_file column")?;
         }
 
         // Attempt to drop legacy columns if they exist (SQLite 3.35.0+)
@@ -79,7 +79,7 @@ impl Database {
                 duration_ms as i64,
                 output_file
             ],
-        )?;
+        ).context("Failed to insert log entry")?;
         Ok(())
     }
 
@@ -89,7 +89,7 @@ impl Database {
             "SELECT COUNT(*) FROM entries",
             [],
             |row| row.get(0),
-        )?;
+        ).context("Failed to count entries")?;
         Ok(count)
     }
 
@@ -100,7 +100,7 @@ impl Database {
         let mut stmt = self.conn.prepare(
             "SELECT id, command, output, exit_code, duration_ms, output_file 
              FROM entries ORDER BY id ASC"
-        )?;
+        ).context("Failed to prepare iteration statement")?;
         let entry_iter = stmt.query_map([], |row| {
             Ok(Entry {
                 id: row.get(0)?,
@@ -110,10 +110,10 @@ impl Database {
                 duration_ms: row.get(4)?,
                 output_file: row.get(5)?,
             })
-        })?;
+        }).context("Failed to query entries")?;
 
         for entry in entry_iter {
-            callback(entry?)?;
+            callback(entry.context("Failed to read entry row")?)?;
         }
         Ok(())
     }

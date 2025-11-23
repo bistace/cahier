@@ -1,5 +1,5 @@
 use anyhow::Result;
-use cahier::executor;
+use cahier::{executor, common};
 use std::sync::{Arc, Mutex};
 
 #[test]
@@ -54,8 +54,10 @@ fn test_executor_large_output() -> Result<()> {
             assert!(output_file.is_some());
             assert!(output.contains("Output too large"));
             
-            // Cleanup output file
+            // Verify output file location
             if let Some(path) = output_file {
+                assert!(path.contains(common::OUTPUT_DIR));
+                
                 if std::path::Path::new(&path).exists() {
                     std::fs::remove_file(path)?;
                 }
@@ -66,4 +68,3 @@ fn test_executor_large_output() -> Result<()> {
     
     Ok(())
 }
-

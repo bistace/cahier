@@ -11,6 +11,8 @@ pub struct Config {
     pub ignored_outputs: Vec<String>,
     #[serde(default = "default_theme")]
     pub theme: String,
+    #[serde(default = "default_load_aliases")]
+    pub load_aliases: bool,
 }
 
 fn default_ignored_outputs() -> Vec<String> {
@@ -42,11 +44,16 @@ fn default_theme() -> String {
     "Solarized (dark)".to_string()
 }
 
+fn default_load_aliases() -> bool {
+    true
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             ignored_outputs: default_ignored_outputs(),
             theme: default_theme(),
+            load_aliases: default_load_aliases(),
         }
     }
 }
@@ -90,4 +97,3 @@ impl Config {
         Ok(config)
     }
 }
-

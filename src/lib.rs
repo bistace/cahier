@@ -1,3 +1,4 @@
+pub mod alias;
 pub mod command;
 pub mod common;
 pub mod completion;

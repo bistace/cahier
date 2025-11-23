@@ -28,14 +28,17 @@ impl FileCompleter {
             if let Some(idx) = stripped.find(MAIN_SEPARATOR) {
                 let var = &stripped[..idx];
                 let rest = &stripped[idx..];
-                let env = self.env_vars.lock().unwrap();
-                if let Some(val) = env.get(var) {
-                    return PathBuf::from(val).join(rest.trim_start_matches(MAIN_SEPARATOR));
+                
+                if let Ok(env) = self.env_vars.lock() {
+                    if let Some(val) = env.get(var) {
+                        return PathBuf::from(val).join(rest.trim_start_matches(MAIN_SEPARATOR));
+                    }
                 }
             } else {
-                let env = self.env_vars.lock().unwrap();
-                if let Some(val) = env.get(stripped) {
-                    return PathBuf::from(val);
+                if let Ok(env) = self.env_vars.lock() {
+                    if let Some(val) = env.get(stripped) {
+                        return PathBuf::from(val);
+                    }
                 }
             }
         }
@@ -52,18 +55,19 @@ impl Completer for FileCompleter {
         if path_str.starts_with('$') && !path_str.contains(MAIN_SEPARATOR) {
             if let Some(var_prefix) = path_str.strip_prefix('$') {
                 // Remove the '$'
-                let env = self.env_vars.lock().unwrap();
                 let mut suggestions = Vec::new();
                 
-                for (key, _value) in env.iter() {
-                    if key.starts_with(var_prefix) {
-                        suggestions.push(Suggestion {
-                            value: format!("${}", key),
-                            description: None,
-                            extra: None,
-                            span: Span { start, end: pos },
-                            append_whitespace: true,
-                        });
+                if let Ok(env) = self.env_vars.lock() {
+                    for (key, _value) in env.iter() {
+                        if key.starts_with(var_prefix) {
+                            suggestions.push(Suggestion {
+                                value: format!("${}", key),
+                                description: None,
+                                extra: None,
+                                span: Span { start, end: pos },
+                                append_whitespace: true,
+                            });
+                        }
                     }
                 }
                 

@@ -18,3 +18,5 @@ pub const DEFAULT_MAX_OUTPUT_SIZE: usize = 16384;
 /// Directory for storing large outputs
 pub const OUTPUT_DIR: &str = "cahier_logs/outputs";
 
+/// Directory for temporary files (e.g. env dumps)
+pub const TEMP_DIR: &str = "cahier_logs/tmp";

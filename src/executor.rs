@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
+
+#[cfg(unix)]
 use std::os::unix::io::AsRawFd;
 
 #[cfg(unix)]
@@ -15,7 +17,7 @@ use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 #[cfg(unix)]
 use nix::unistd::Pid;
 
-use crate::common::OUTPUT_DIR;
+use crate::common::{OUTPUT_DIR, TEMP_DIR};
 
 /// RAII guard that ensures raw mode is disabled when dropped
 struct RawModeGuard {
@@ -45,36 +47,50 @@ impl Drop for RawModeGuard {
 
 /// Helper for non-blocking stdin
 struct NonBlockingStdinGuard {
+    #[cfg(unix)]
     fd: i32,
+    #[cfg(unix)]
     orig_flags: i32,
 }
 
 impl NonBlockingStdinGuard {
     fn new() -> Result<Self> {
-        let fd = std::io::stdin().as_raw_fd();
-        // SAFETY: fd is the file descriptor for stdin, which is guaranteed to be valid here.
-        let orig_flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-        if orig_flags < 0 {
-            return Err(anyhow::anyhow!("Failed to get stdin flags"));
-        }
-        
-        // SAFETY: fd is valid and we are setting the O_NONBLOCK flag to enable non-blocking reads.
-        let res = unsafe { libc::fcntl(fd, libc::F_SETFL, orig_flags | libc::O_NONBLOCK) };
-        if res < 0 {
-            return Err(anyhow::anyhow!("Failed to set stdin to non-blocking"));
-        }
+        #[cfg(unix)]
+        {
+            let fd = std::io::stdin().as_raw_fd();
+            // SAFETY: fd is the file descriptor for stdin, which is guaranteed to be valid here.
+            let orig_flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if orig_flags < 0 {
+                return Err(anyhow::anyhow!("Failed to get stdin flags"));
+            }
+            
+            // SAFETY: fd is valid and we are setting the O_NONBLOCK flag to enable non-blocking reads.
+            let res = unsafe { libc::fcntl(fd, libc::F_SETFL, orig_flags | libc::O_NONBLOCK) };
+            if res < 0 {
+                return Err(anyhow::anyhow!("Failed to set stdin to non-blocking"));
+            }
 
-        Ok(Self { fd, orig_flags })
+            Ok(Self { fd, orig_flags })
+        }
+        #[cfg(not(unix))]
+        {
+            // On non-Unix, we might not easily set non-blocking stdin without external crates or complex logic.
+            // For now, we proceed without it, which might mean the input thread blocks on read.
+            Ok(Self {})
+        }
     }
 }
 
 impl Drop for NonBlockingStdinGuard {
     fn drop(&mut self) {
-        // SAFETY: self.fd is a valid file descriptor (stdin) and self.orig_flags are the original flags.
-        // We are restoring the original flags.
-        unsafe {
-            if libc::fcntl(self.fd, libc::F_SETFL, self.orig_flags) < 0 {
-                eprintln!("Failed to restore stdin flags");
+        #[cfg(unix)]
+        {
+            // SAFETY: self.fd is a valid file descriptor (stdin) and self.orig_flags are the original flags.
+            // We are restoring the original flags.
+            unsafe {
+                if libc::fcntl(self.fd, libc::F_SETFL, self.orig_flags) < 0 {
+                    eprintln!("Failed to restore stdin flags");
+                }
             }
         }
     }
@@ -89,15 +105,64 @@ impl Drop for EnvDumpGuard {
     }
 }
 
+fn create_secure_temp_file() -> Result<PathBuf> {
+    let temp_dir = PathBuf::from(TEMP_DIR);
+    
+    if !temp_dir.exists() {
+        fs::create_dir_all(&temp_dir).context("Failed to create temp directory")?;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata = fs::metadata(&temp_dir)?;
+        let mut perms = metadata.permissions();
+        if perms.mode() & 0o777 != 0o700 {
+            perms.set_mode(0o700);
+            fs::set_permissions(&temp_dir, perms).context("Failed to set temp dir permissions")?;
+        }
+    }
+
+    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S_%f");
+    let filename = format!("cahier_env_{}", timestamp);
+    let filepath = temp_dir.join(filename);
+
+    // Create the file with restrictive permissions
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&filepath)
+            .context("Failed to create secure temp file")?;
+    }
+    #[cfg(not(unix))]
+    {
+        // On non-Unix, standard creation. Access control depends on ACLs which we don't explicitly manage here yet.
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&filepath)
+            .context("Failed to create temp file")?;
+    }
+
+    Ok(filepath)
+}
+
 fn quote_for_trap(path: &str) -> String {
-    // We want to produce: umask 077; env -0 > "PATH"
+    // We want to produce: umask 077; (env -0 || printenv -0) > "PATH"
     // PATH needs " and \ escaped.
     let escaped_path = path.replace('\\', "\\\\").replace('"', "\\\"");
     
-    // Check if env -0 is likely supported or fallback? 
-    // For now we stick to env -0 but wrapped. 
-    // In the future we could detect OS/features.
-    let inner_cmd = format!("umask 077; env -0 > \"{}\"", escaped_path);
+    // Try `env -0`, fallback to `printenv -0`, fallback to nothing (or true) if both fail to avoid crash,
+    // though we won't get env vars.
+    // We use `2>/dev/null` to silence errors if tools are missing.
+    let inner_cmd = format!(
+        "umask 077; (env -0 2>/dev/null || printenv -0 2>/dev/null || true) > \"{}\"", 
+        escaped_path
+    );
     
     // Now quote for the single-quoted trap argument
     // replace ' with '\''
@@ -112,6 +177,7 @@ struct OutputHandler {
     max_output_size: usize,
     capture_output: bool,
     suppress_output: bool,
+    last_flush: std::time::Instant,
 }
 
 impl OutputHandler {
@@ -123,6 +189,7 @@ impl OutputHandler {
             max_output_size,
             capture_output,
             suppress_output,
+            last_flush: std::time::Instant::now(),
         }
     }
 
@@ -171,7 +238,12 @@ impl OutputHandler {
 
         if !self.suppress_output {
             io::stdout().write_all(data)?;
-            io::stdout().flush()?;
+            // Flush periodically (e.g., every 50ms) or on newline to avoid excessive syscalls
+            // while keeping it interactive.
+            if data.contains(&b'\n') || self.last_flush.elapsed().as_millis() > 50 {
+                io::stdout().flush()?;
+                self.last_flush = std::time::Instant::now();
+            }
         }
         Ok(())
     }
@@ -547,8 +619,8 @@ pub fn execute_in_pty(
     let mut cmd = CommandBuilder::new(shell);
 
     // Generate unique temporary file path for environment dump
-    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S_%f");
-    let env_dump_path = std::env::temp_dir().join(format!("cahier_env_{}", timestamp));
+    // We pre-create it to ensure we have permissions right (security hardening)
+    let env_dump_path = create_secure_temp_file()?;
 
     // Wrap command with trap to capture environment on exit
     // Set umask 077 to ensure the temporary file is only readable by the owner
@@ -652,6 +724,9 @@ mod tests {
         // simple echo
         let pty_writer = Arc::new(Mutex::new(None));
         let env = Arc::new(Mutex::new(std::env::vars().collect()));
+        // We must ensure CAHIER_DIR exists for tests if we use create_secure_temp_file
+        let _ = std::fs::create_dir_all("cahier_logs/tmp");
+
         let result =
             execute_in_pty("echo 'hello world'", 1024, &pty_writer, &env, true, true)
                 .expect("failed to execute");
@@ -670,6 +745,7 @@ mod tests {
     fn test_execute_failure() {
         let pty_writer = Arc::new(Mutex::new(None));
         let env = Arc::new(Mutex::new(std::env::vars().collect()));
+        let _ = std::fs::create_dir_all("cahier_logs/tmp");
         let result =
             execute_in_pty("nonexistent_command_123", 1024, &pty_writer, &env, true, true)
                 .expect("failed to execute");
@@ -686,22 +762,17 @@ mod tests {
     fn test_quote_for_trap() {
         let path = "/tmp/test path/env";
         let quoted = quote_for_trap(path);
-        // Should produce: 'umask 077; env -0 > "/tmp/test path/env"'
-        assert_eq!(quoted, "'umask 077; env -0 > \"/tmp/test path/env\"'");
+        // Should produce: 'umask 077; (env -0 2>/dev/null || printenv -0 2>/dev/null || true) > "/tmp/test path/env"'
+        assert_eq!(quoted, "'umask 077; (env -0 2>/dev/null || printenv -0 2>/dev/null || true) > \"/tmp/test path/env\"'");
 
         let path_with_quote = "/tmp/test\"path/env";
         let quoted_quote = quote_for_trap(path_with_quote);
         // Should escape internal quote: " -> \"
-        assert_eq!(quoted_quote, "'umask 077; env -0 > \"/tmp/test\\\"path/env\"'");
+        assert_eq!(quoted_quote, "'umask 077; (env -0 2>/dev/null || printenv -0 2>/dev/null || true) > \"/tmp/test\\\"path/env\"'");
 
         let path_with_single_quote = "/tmp/test'path";
         let quoted_single = quote_for_trap(path_with_single_quote);
         // Single quote in single quoted string needs ' -> '\''
-        // umask 077; env -0 > "/tmp/test'path"
-        // Wrapped in single quotes: '... "/tmp/test'\''path" ...'
-        // Actually the path is inside double quotes in the inner command:
-        // inner: umask 077; env -0 > "/tmp/test'path"
-        // outer: 'umask 077; env -0 > "/tmp/test'\''path"'
-        assert_eq!(quoted_single, "'umask 077; env -0 > \"/tmp/test'\\''path\"'");
+        assert_eq!(quoted_single, "'umask 077; (env -0 2>/dev/null || printenv -0 2>/dev/null || true) > \"/tmp/test'\\''path\"'");
     }
 }
