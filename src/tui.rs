@@ -50,6 +50,7 @@ struct App<'a> {
 enum InputMode {
     Normal,
     EditingAnnotation,
+    ConfirmDelete,
 }
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, db: Database) -> Result<()> {
@@ -84,7 +85,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, db: Database) -> R
                         KeyCode::Char('k') | KeyCode::Up => app.previous(),
                         KeyCode::Char('J') => app.move_entry(DbDirection::Down)?,
                         KeyCode::Char('K') => app.move_entry(DbDirection::Up)?,
-                        KeyCode::Char('d') => app.delete_entry()?,
+                        KeyCode::Char('d') => {
+                            if app.list_state.selected().is_some() {
+                                app.input_mode = InputMode::ConfirmDelete;
+                            }
+                        },
                         KeyCode::Char('a') => app.start_editing_annotation(),
                         KeyCode::Enter => {
                             app.toggle_output_fullscreen();
@@ -98,6 +103,16 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, db: Database) -> R
                         _ => {
                             app.input_buffer.input(key);
                         }
+                    },
+                    InputMode::ConfirmDelete => match key.code {
+                        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                            app.delete_entry()?;
+                            app.input_mode = InputMode::Normal;
+                        }
+                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                            app.input_mode = InputMode::Normal;
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -264,6 +279,10 @@ fn ui(f: &mut Frame, app: &mut App) {
     if app.input_mode == InputMode::EditingAnnotation {
         render_annotation_popup(f, app);
     }
+    
+    if app.input_mode == InputMode::ConfirmDelete {
+        render_delete_confirmation(f);
+    }
 }
 
 fn render_main_layout(f: &mut Frame, app: &mut App) {
@@ -384,6 +403,23 @@ fn render_annotation_popup(f: &mut Frame, app: &mut App) {
     let area = centered_rect(60, 20, f.area());
     f.render_widget(Clear, area); // Clear background
     f.render_widget(&app.input_buffer, area);
+}
+
+fn render_delete_confirmation(f: &mut Frame) {
+    let area = centered_rect(40, 10, f.area());
+    f.render_widget(Clear, area);
+    
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Confirm Deletion")
+        .style(Style::default().fg(Color::Red));
+        
+    let p = Paragraph::new("Are you sure you want to delete this entry?\n\n(y)es / (n)o")
+        .block(block)
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true });
+        
+    f.render_widget(p, area);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
