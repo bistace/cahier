@@ -9,3 +9,4 @@ pub mod export;
 pub mod highlighter;
 pub mod prompt;
 pub mod repl;
+pub mod tui;

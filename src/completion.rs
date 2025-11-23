@@ -87,11 +87,9 @@ impl CahierCompleter {
                         return PathBuf::from(val).join(rest.trim_start_matches(MAIN_SEPARATOR));
                     }
                 }
-            } else {
-                if let Ok(env) = self.env_vars.lock() {
-                    if let Some(val) = env.get(stripped) {
-                        return PathBuf::from(val);
-                    }
+            } else if let Ok(env) = self.env_vars.lock() {
+                if let Some(val) = env.get(stripped) {
+                    return PathBuf::from(val);
                 }
             }
         }

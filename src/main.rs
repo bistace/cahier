@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-use cahier::{common, config, db, export, repl};
+use cahier::{common, config, db, export, repl, tui};
 use common::{DB_FILENAME, DEFAULT_MAX_OUTPUT_SIZE, CAHIER_DIR};
 
 #[derive(Parser)]
@@ -31,6 +31,8 @@ enum Commands {
         #[arg(long)]
         only_commands: bool,
     },
+    /// Open TUI editor for command history
+    Edit,
 }
 
 fn main() -> Result<()> {
@@ -58,6 +60,9 @@ fn main() -> Result<()> {
                 println!("{}", content);
             }
             Ok(())
+        }
+        Some(Commands::Edit) => {
+            tui::run(db)
         }
         Some(Commands::Start { max_output_size }) => {
             let pty_writer = setup_signal_handler()?;
