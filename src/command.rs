@@ -16,6 +16,7 @@ pub struct CommandContext<'a> {
     pub max_output_size: usize,
     pub prompt: &'a mut CahierPrompt,
     pub aliases: &'a Arc<Mutex<HashMap<String, String>>>,
+    pub should_log: bool,
 }
 
 pub enum CommandResult {
@@ -81,8 +82,10 @@ impl Command for CdCommand {
             }
             
             let cmd_line = format!("cd {}", path);
-            if let Err(e) = context.db.log_entry(&cmd_line, "", Some(0), 0, None) {
-                eprintln!("Error logging cd command: {}", e);
+            if context.should_log {
+                if let Err(e) = context.db.log_entry(&cmd_line, "", Some(0), 0, None) {
+                    eprintln!("Error logging cd command: {}", e);
+                }
             }
             context.prompt.set_last_success(true);
         }
@@ -246,14 +249,16 @@ pub fn handle_execution_result(
     match res {
         ExecutionResult::Completed { output, exit_code, output_file } => {
             let duration = start_time.elapsed();
-            if let Err(e) = context.db.log_entry(
-                input,
-                &output,
-                exit_code,
-                duration.as_millis(),
-                output_file.as_deref(),
-            ) {
-                eprintln!("Error logging command: {}", e);
+            if context.should_log {
+                if let Err(e) = context.db.log_entry(
+                    input,
+                    &output,
+                    exit_code,
+                    duration.as_millis(),
+                    output_file.as_deref(),
+                ) {
+                    eprintln!("Error logging command: {}", e);
+                }
             }
             
             if let Some(code) = exit_code {

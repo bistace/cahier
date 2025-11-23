@@ -83,7 +83,17 @@ pub fn run_repl(
                 let start_total = Instant::now();
 
                 // Expand aliases
-                let expanded_input = expand_alias(input, &aliases);
+                let expanded_input_raw = expand_alias(input, &aliases);
+                
+                // Check for nr prefix to skip logging
+                let (expanded_input, should_log) = {
+                    let trimmed = expanded_input_raw.trim_start();
+                    if let Some(stripped) = trimmed.strip_prefix("nr ") {
+                        (stripped.to_string(), false)
+                    } else {
+                        (expanded_input_raw, true)
+                    }
+                };
                 
                 // Check for built-in commands
                 let args_owned = shlex::split(&expanded_input).unwrap_or_default();
@@ -99,6 +109,7 @@ pub fn run_repl(
                             max_output_size,
                             prompt: &mut prompt,
                             aliases: &aliases,
+                            should_log,
                         };
                         
                         match cmd.execute(&args[1..], &mut context) {
@@ -139,6 +150,7 @@ pub fn run_repl(
                             max_output_size,
                             prompt: &mut prompt,
                             aliases: &aliases,
+                            should_log,
                         };
                         
                          // Log the ORIGINAL input or expanded? 
