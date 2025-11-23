@@ -1,16 +1,69 @@
 use reedline::{Completer, Suggestion, Span};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 use std::fs;
 use std::sync::{Arc, Mutex};
 
-pub struct FileCompleter {
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+pub struct CahierCompleter {
     env_vars: Arc<Mutex<HashMap<String, String>>>,
+    aliases: Arc<Mutex<HashMap<String, String>>>,
+    builtins: Vec<String>,
+    external_commands: Vec<String>,
 }
 
-impl FileCompleter {
-    pub fn new(env_vars: Arc<Mutex<HashMap<String, String>>>) -> Self {
-        Self { env_vars }
+impl CahierCompleter {
+    pub fn new(
+        env_vars: Arc<Mutex<HashMap<String, String>>>,
+        aliases: Arc<Mutex<HashMap<String, String>>>,
+        builtins: Vec<String>,
+    ) -> Self {
+        let external_commands = Self::scan_path_commands();
+        Self {
+            env_vars,
+            aliases,
+            builtins,
+            external_commands,
+        }
+    }
+
+    fn scan_path_commands() -> Vec<String> {
+        let path_var = std::env::var("PATH").unwrap_or_default();
+        let mut commands = HashSet::new();
+
+        for path_str in std::env::split_paths(&path_var) {
+            if let Ok(entries) = fs::read_dir(path_str) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    // Check if it is a file and executable
+                    if path.is_file() {
+                        #[cfg(unix)]
+                        {
+                            if let Ok(metadata) = path.metadata() {
+                                if metadata.permissions().mode() & 0o111 != 0 {
+                                    if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                                        commands.insert(name.to_string());
+                                    }
+                                }
+                            }
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            // On Windows/other, check extension or assume executable if it's in PATH
+                            if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                                commands.insert(name.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        let mut cmd_vec: Vec<String> = commands.into_iter().collect();
+        cmd_vec.sort();
+        cmd_vec
     }
 
     fn expand_path(&self, path_str: &str) -> PathBuf {
@@ -47,13 +100,72 @@ impl FileCompleter {
     }
 }
 
-impl Completer for FileCompleter {
+impl Completer for CahierCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
-        let (start, path_str) = find_word_at_pos(line, pos);
+        let (start, word) = find_word_at_pos(line, pos);
         
+        // Check if we are at command position
+        // Logic: if the text before the current word contains no non-whitespace characters, we are at command position.
+        // However, we must respect that `start` is the index of the word start.
+        let prefix = &line[..start];
+        let is_command_pos = prefix.trim().is_empty();
+
+        if is_command_pos {
+            let mut suggestions = Vec::new();
+            let mut seen = HashSet::new();
+
+            // 1. Aliases
+            if let Ok(aliases) = self.aliases.lock() {
+                for (name, value) in aliases.iter() {
+                    if name.starts_with(word) && !seen.contains(name) {
+                        suggestions.push(Suggestion {
+                            value: name.clone(),
+                            description: Some(format!("Alias: {}", value)),
+                            extra: None,
+                            span: Span { start, end: pos },
+                            append_whitespace: true,
+                        });
+                        seen.insert(name.clone());
+                    }
+                }
+            }
+
+            // 2. Builtins
+            for name in &self.builtins {
+                if name.starts_with(word) && !seen.contains(name) {
+                    suggestions.push(Suggestion {
+                        value: name.clone(),
+                        description: Some("Builtin".to_string()),
+                        extra: None,
+                        span: Span { start, end: pos },
+                        append_whitespace: true,
+                    });
+                    seen.insert(name.clone());
+                }
+            }
+
+            // 3. External Commands
+            for name in &self.external_commands {
+                 if name.starts_with(word) && !seen.contains(name) {
+                    suggestions.push(Suggestion {
+                        value: name.clone(),
+                        description: Some("Command".to_string()),
+                        extra: None,
+                        span: Span { start, end: pos },
+                        append_whitespace: true,
+                    });
+                    seen.insert(name.clone());
+                }
+            }
+            
+            if !suggestions.is_empty() {
+                return suggestions;
+            }
+        }
+
         // Check if we're completing a variable (starts with $ and has no separator)
-        if path_str.starts_with('$') && !path_str.contains(MAIN_SEPARATOR) {
-            if let Some(var_prefix) = path_str.strip_prefix('$') {
+        if word.starts_with('$') && !word.contains(MAIN_SEPARATOR) {
+            if let Some(var_prefix) = word.strip_prefix('$') {
                 // Remove the '$'
                 let mut suggestions = Vec::new();
                 
@@ -76,14 +188,14 @@ impl Completer for FileCompleter {
         }
         
         // Otherwise, do file completion
-        let path = Path::new(path_str);
+        let path = Path::new(word);
         
-        let (dir, file_name) = if path_str.ends_with(MAIN_SEPARATOR) {
+        let (dir, file_name) = if word.ends_with(MAIN_SEPARATOR) {
             (path, "")
         } else {
             match path.parent() {
                 Some(parent) if !parent.as_os_str().is_empty() => (parent, path.file_name().and_then(|s| s.to_str()).unwrap_or("")),
-                _ => (Path::new("."), path_str),
+                _ => (Path::new("."), word),
             }
         };
         

@@ -53,6 +53,10 @@ impl Registry {
     pub fn get(&self, name: &str) -> Option<&dyn Command> {
         self.commands.get(name).map(|b| b.as_ref())
     }
+
+    pub fn command_names(&self) -> Vec<String> {
+        self.commands.keys().cloned().collect()
+    }
 }
 
 // Built-in commands

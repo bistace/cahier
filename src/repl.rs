@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::alias;
 use crate::common::{HISTORY_FILENAME, MAX_HISTORY_ENTRIES, DB_FILENAME};
-use crate::completion::FileCompleter;
+use crate::completion::CahierCompleter;
 use crate::config::Config;
 use crate::db;
 use crate::executor::{self, Job};
@@ -48,17 +48,6 @@ pub fn run_repl(
     let current_env: Arc<Mutex<HashMap<String, String>>> = 
         Arc::new(Mutex::new(std::env::vars().collect()));
 
-    let mut line_editor = Reedline::create()
-        .with_history(history)
-        .with_completer(Box::new(FileCompleter::new(current_env.clone())))
-        .with_quick_completions(true)
-        .with_menu(ReedlineMenu::EngineCompleter(Box::new(ColumnarMenu::default().with_name("completion_menu"))))
-        .with_edit_mode(Box::new(edit_mode))
-        .with_highlighter(Box::new(SyntectHighlighter::new(config.theme.clone())));
-    let mut prompt = CahierPrompt::new();
-
-    let mut jobs: Vec<Job> = Vec::new();
-    
     let mut registry = Registry::new();
     registry.register(Box::new(command::CdCommand));
     registry.register(Box::new(command::JobsCommand));
@@ -78,6 +67,23 @@ pub fn run_repl(
     };
     let aliases = Arc::new(Mutex::new(aliases_map));
 
+    let builtins = registry.command_names();
+
+    let mut line_editor = Reedline::create()
+        .with_history(history)
+        .with_completer(Box::new(CahierCompleter::new(
+            current_env.clone(),
+            aliases.clone(),
+            builtins
+        )))
+        .with_quick_completions(true)
+        .with_menu(ReedlineMenu::EngineCompleter(Box::new(ColumnarMenu::default().with_name("completion_menu"))))
+        .with_edit_mode(Box::new(edit_mode))
+        .with_highlighter(Box::new(SyntectHighlighter::new(config.theme.clone())));
+    let mut prompt = CahierPrompt::new();
+
+    let mut jobs: Vec<Job> = Vec::new();
+    
     loop {
         let sig = line_editor.read_line(&prompt);
         match sig {
