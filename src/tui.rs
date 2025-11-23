@@ -345,15 +345,24 @@ fn render_main_layout(f: &mut Frame, app: &mut App) {
         .iter()
         .map(|e| {
             let annotation = e.annotation.as_deref().unwrap_or("");
+            let id_color = match e.exit_code {
+                Some(0) => Color::Blue,
+                _ => Color::Red,
+            };
+
             if annotation.is_empty() {
-                ListItem::new(format!("[{}] {}", e.id, e.command))
+                let id_span = Span::styled(format!("[{}]", e.id), Style::default().fg(id_color));
+                let command_span = Span::raw(format!(" {}", e.command));
+                ListItem::new(Line::from(vec![id_span, command_span]))
             } else {
                 let mut lines = Vec::new();
                 let wrapped = textwrap::wrap(annotation, list_width);
                 for line in wrapped {
                     lines.push(Line::styled(line.to_string(), Style::default().fg(Color::Yellow)));
                 }
-                lines.push(Line::raw(format!("[{}] {}", e.id, e.command)));
+                let id_span = Span::styled(format!("[{}]", e.id), Style::default().fg(id_color));
+                let command_span = Span::raw(format!(" {}", e.command));
+                lines.push(Line::from(vec![id_span, command_span]));
                 ListItem::new(lines)
             }
         })
