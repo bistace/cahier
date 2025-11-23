@@ -93,8 +93,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, db: Database) -> R
                         _ => {}
                     },
                     InputMode::EditingAnnotation => match key.code {
-                        KeyCode::Enter => app.save_annotation()?,
-                        KeyCode::Esc => app.cancel_editing_annotation(),
+                        KeyCode::Enter => {
+                            app.input_buffer.push('\n');
+                        }
+                        KeyCode::Esc => app.save_annotation()?,
                         KeyCode::Char(c) => {
                             app.input_buffer.push(c);
                         }
@@ -208,11 +210,6 @@ impl App {
         }
     }
 
-    fn cancel_editing_annotation(&mut self) {
-        self.input_mode = InputMode::Normal;
-        self.input_buffer.clear();
-    }
-
     fn save_annotation(&mut self) -> Result<()> {
         if let Some(i) = self.list_state.selected() {
             let id = self.entries[i].id;
@@ -276,16 +273,22 @@ fn render_main_layout(f: &mut Frame, app: &mut App) {
         .split(chunks[0]);
 
     // List
+    let list_width = content_chunks[0].width.saturating_sub(2) as usize;
     let items: Vec<ListItem> = app.entries
         .iter()
         .map(|e| {
             let annotation = e.annotation.as_deref().unwrap_or("");
-            let content = if annotation.is_empty() {
-                format!("[{}] {}", e.id, e.command)
+            if annotation.is_empty() {
+                ListItem::new(format!("[{}] {}", e.id, e.command))
             } else {
-                format!("[{}] {} ({})", e.id, e.command, annotation)
-            };
-            ListItem::new(content)
+                let mut lines = Vec::new();
+                let wrapped = textwrap::wrap(annotation, list_width);
+                for line in wrapped {
+                    lines.push(Line::styled(line.to_string(), Style::default().fg(Color::Yellow)));
+                }
+                lines.push(Line::raw(format!("[{}] {}", e.id, e.command)));
+                ListItem::new(lines)
+            }
         })
         .collect();
 
