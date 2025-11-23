@@ -9,6 +9,8 @@ const CONFIG_FILE: &str = "config.json";
 pub struct Config {
     #[serde(default = "default_ignored_outputs")]
     pub ignored_outputs: Vec<String>,
+    #[serde(default = "default_theme")]
+    pub theme: String,
 }
 
 fn default_ignored_outputs() -> Vec<String> {
@@ -36,10 +38,15 @@ fn default_ignored_outputs() -> Vec<String> {
     ]
 }
 
+fn default_theme() -> String {
+    "Solarized (dark)".to_string()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             ignored_outputs: default_ignored_outputs(),
+            theme: default_theme(),
         }
     }
 }

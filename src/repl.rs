@@ -10,6 +10,7 @@ use crate::completion::FileCompleter;
 use crate::config::Config;
 use crate::db;
 use crate::executor::{self, Job};
+use crate::highlighter::SyntectHighlighter;
 use crate::prompt::CahierPrompt;
 use crate::command::{self, Registry, CommandContext, CommandResult};
 
@@ -51,7 +52,8 @@ pub fn run_repl(
         .with_completer(Box::new(FileCompleter::new(current_env.clone())))
         .with_quick_completions(true)
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(ColumnarMenu::default().with_name("completion_menu"))))
-        .with_edit_mode(Box::new(edit_mode));
+        .with_edit_mode(Box::new(edit_mode))
+        .with_highlighter(Box::new(SyntectHighlighter::new(config.theme.clone())));
     let mut prompt = CahierPrompt::new();
 
     let mut jobs: Vec<Job> = Vec::new();

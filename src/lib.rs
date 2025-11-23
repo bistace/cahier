@@ -5,5 +5,6 @@ pub mod config;
 pub mod db;
 pub mod executor;
 pub mod export;
+pub mod highlighter;
 pub mod prompt;
 pub mod repl;
