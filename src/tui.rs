@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::{
+use ratatui::crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -8,6 +8,7 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap, Clear},
 };
+use tui_textarea::TextArea;
 use std::io::{self, Stdout};
 
 use crate::db::{Database, Entry, Direction as DbDirection};
@@ -33,14 +34,14 @@ pub fn run(db: Database) -> Result<()> {
     app_result
 }
 
-struct App {
+struct App<'a> {
     db: Database,
     entries: Vec<Entry>,
     list_state: ListState,
     should_quit: bool,
     show_output_fullscreen: bool,
     input_mode: InputMode,
-    input_buffer: String,
+    input_buffer: TextArea<'a>,
     fullscreen_scroll: u16,
     // For popup messages or confirmation if needed, sticking to simple for now
 }
@@ -93,17 +94,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, db: Database) -> R
                         _ => {}
                     },
                     InputMode::EditingAnnotation => match key.code {
-                        KeyCode::Enter => {
-                            app.input_buffer.push('\n');
-                        }
                         KeyCode::Esc => app.save_annotation()?,
-                        KeyCode::Char(c) => {
-                            app.input_buffer.push(c);
+                        _ => {
+                            app.input_buffer.input(key);
                         }
-                        KeyCode::Backspace => {
-                            app.input_buffer.pop();
-                        }
-                        _ => {}
                     }
                 }
             }
@@ -115,13 +109,18 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, db: Database) -> R
     }
 }
 
-impl App {
+impl<'a> App<'a> {
     fn new(db: Database) -> Result<Self> {
         let entries = db.get_all_entries_ordered()?;
         let mut list_state = ListState::default();
         if !entries.is_empty() {
             list_state.select(Some(entries.len() - 1)); // Select last by default
         }
+
+        let mut textarea = TextArea::default();
+        textarea.set_block(Block::default().borders(Borders::ALL).title("Edit Annotation"));
+        textarea.set_style(Style::default().fg(Color::Yellow));
+        textarea.set_cursor_line_style(Style::default());
 
         Ok(Self {
             db,
@@ -130,7 +129,7 @@ impl App {
             should_quit: false,
             show_output_fullscreen: false,
             input_mode: InputMode::Normal,
-            input_buffer: String::new(),
+            input_buffer: textarea,
             fullscreen_scroll: 0,
         })
     }
@@ -206,17 +205,29 @@ impl App {
     fn start_editing_annotation(&mut self) {
         if let Some(i) = self.list_state.selected() {
             self.input_mode = InputMode::EditingAnnotation;
-            self.input_buffer = self.entries[i].annotation.clone().unwrap_or_default();
+            let content = self.entries[i].annotation.clone().unwrap_or_default();
+            self.input_buffer = TextArea::new(content.lines().map(|s| s.to_string()).collect());
+            self.input_buffer.set_block(Block::default().borders(Borders::ALL).title("Edit Annotation"));
+            self.input_buffer.set_style(Style::default().fg(Color::Yellow));
+            self.input_buffer.set_cursor_line_style(Style::default());
+            // Move cursor to end
+            self.input_buffer.move_cursor(tui_textarea::CursorMove::Bottom);
+            self.input_buffer.move_cursor(tui_textarea::CursorMove::End);
         }
     }
 
     fn save_annotation(&mut self) -> Result<()> {
         if let Some(i) = self.list_state.selected() {
             let id = self.entries[i].id;
-            self.db.update_annotation(id, self.input_buffer.clone())?;
+            let content = self.input_buffer.lines().join("\n");
+            self.db.update_annotation(id, content)?;
             self.refresh_entries()?;
             self.input_mode = InputMode::Normal;
-            self.input_buffer.clear();
+            // Clear textarea
+            self.input_buffer = TextArea::default();
+            self.input_buffer.set_block(Block::default().borders(Borders::ALL).title("Edit Annotation"));
+            self.input_buffer.set_style(Style::default().fg(Color::Yellow));
+            self.input_buffer.set_cursor_line_style(Style::default());
         }
         Ok(())
     }
@@ -370,15 +381,9 @@ fn render_fullscreen_output(f: &mut Frame, app: &mut App) {
 }
 
 fn render_annotation_popup(f: &mut Frame, app: &mut App) {
-    let block = Block::default().borders(Borders::ALL).title("Edit Annotation");
     let area = centered_rect(60, 20, f.area());
     f.render_widget(Clear, area); // Clear background
-    
-    let p = Paragraph::new(app.input_buffer.as_str())
-        .block(block)
-        .style(Style::default().fg(Color::Yellow));
-    
-    f.render_widget(p, area);
+    f.render_widget(&app.input_buffer, area);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
