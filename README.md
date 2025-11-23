@@ -75,6 +75,24 @@ cahier export --output session_log.md
 cahier export --only-commands
 ```
 
+### Interactive History Editor
+
+Manage and browse your session history with an interactive TUI editor.
+
+**Launching:**
+- From command line: `cahier edit`
+- Inside REPL: `edit`
+
+**Key Bindings:**
+- **Navigation**: `j` / `k` or `Up` / `Down`
+- **View Output**: `Enter` (toggle fullscreen)
+- **Management**:
+  - `d`: Delete entry
+  - `a`: Annotate entry
+  - `J` / `K`: Move entry up/down
+- **Execution**: `s` to send command to REPL
+- **Quit**: `q`
+
 ## Configuration
 
 Cahier creates a configuration file at `~/.cahier/config.json`. You can customize the behavior by editing this file.
