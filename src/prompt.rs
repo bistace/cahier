@@ -69,7 +69,7 @@ impl Prompt for CahierPrompt {
         let prompt_str = format!("{}@{}:{}{}\n", username, hostname, cwd, duration_str);
         
         let colored_prompt = if self.last_success {
-            prompt_str.green()
+            prompt_str.blue()
         } else {
             prompt_str.red()
         };
