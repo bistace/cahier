@@ -82,8 +82,14 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, db: Database) -> R
                                 app.should_quit = true;
                             }
                         },
-                        KeyCode::Char('j') | KeyCode::Down => app.next(),
-                        KeyCode::Char('k') | KeyCode::Up => app.previous(),
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            app.next();
+                            terminal.clear()?;
+                        },
+                        KeyCode::Char('k') | KeyCode::Up => {
+                            app.previous();
+                            terminal.clear()?;
+                        },
                         KeyCode::Char('J') => app.move_entry(DbDirection::Down)?,
                         KeyCode::Char('K') => app.move_entry(DbDirection::Up)?,
                         KeyCode::Char('d') => {
