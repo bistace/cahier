@@ -127,7 +127,10 @@ pub fn run_repl(
                         
                         match cmd.execute(&args[1..], &mut context) {
                             Ok(CommandResult::Exit) => break,
-                            Ok(CommandResult::Continue) => continue,
+                            Ok(CommandResult::Continue) => {
+                                println!();
+                                continue;
+                            }
                             Err(e) => {
                                 eprintln!("Error executing {}: {}", cmd_name, e);
                                 prompt.set_last_success(false);

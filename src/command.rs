@@ -65,10 +65,23 @@ pub struct CdCommand;
 impl Command for CdCommand {
     fn name(&self) -> &str { "cd" }
     fn execute(&self, args: &[&str], context: &mut CommandContext) -> Result<CommandResult> {
+        let current_pwd = std::env::current_dir().ok();
+
         let path = if args.is_empty() {
             dirs::home_dir()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| ".".to_string())
+        } else if args[0] == "-" {
+            let env = context.current_env.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(old) = env.get("OLDPWD") {
+                println!("{}", old);
+                old.clone()
+            } else {
+                eprintln!("cd: OLDPWD not set");
+                context.prompt.set_last_success(false);
+                context.prompt.set_last_duration(Some(std::time::Duration::from_millis(0)));
+                return Ok(CommandResult::Continue);
+            }
         } else {
             args[0].to_string()
         };
@@ -84,6 +97,9 @@ impl Command for CdCommand {
                     match context.current_env.lock() {
                         Ok(mut env) => {
                              env.insert("PWD".to_string(), cwd_str.to_string());
+                             if let Some(prev) = current_pwd {
+                                 env.insert("OLDPWD".to_string(), prev.to_string_lossy().to_string());
+                             }
                         },
                         Err(_) => eprintln!("Warning: Failed to lock env to update PWD"),
                     }
