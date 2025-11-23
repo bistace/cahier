@@ -122,7 +122,9 @@ pub fn run_repl(
                 let (expanded_input, should_log) = {
                     let trimmed = expanded_input_raw.trim_start();
                     if let Some(stripped) = trimmed.strip_prefix("nr ") {
-                        (stripped.to_string(), false)
+                        // If we found 'nr', we need to try expanding aliases again
+                        // because the command after 'nr' might be an alias
+                        (alias::expand_alias(stripped, &aliases), false)
                     } else {
                         (expanded_input_raw, true)
                     }
