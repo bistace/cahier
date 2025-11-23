@@ -11,7 +11,7 @@ use ratatui::{
 use tui_textarea::TextArea;
 use std::io::{self, Stdout};
 
-use crate::db::{Database, Entry, Direction as DbDirection};
+use crate::db::{Database, EntrySummary, Direction as DbDirection};
 
 pub fn run(db: Database) -> Result<Option<String>> {
     enable_raw_mode()?;
@@ -36,7 +36,7 @@ pub fn run(db: Database) -> Result<Option<String>> {
 
 struct App<'a> {
     db: Database,
-    entries: Vec<Entry>,
+    entries: Vec<EntrySummary>,
     list_state: ListState,
     should_quit: bool,
     show_output_fullscreen: bool,
@@ -44,6 +44,7 @@ struct App<'a> {
     input_buffer: TextArea<'a>,
     fullscreen_scroll: u16,
     selected_command: Option<String>,
+    current_output_cache: Option<String>,
     // For popup messages or confirmation if needed, sticking to simple for now
 }
 
@@ -141,7 +142,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, db: Database) -> R
 
 impl<'a> App<'a> {
     fn new(db: Database) -> Result<Self> {
-        let entries = db.get_all_entries_ordered()?;
+        let entries = db.get_all_entry_summaries()?;
         let mut list_state = ListState::default();
         if !entries.is_empty() {
             list_state.select(Some(entries.len() - 1)); // Select last by default
@@ -152,7 +153,7 @@ impl<'a> App<'a> {
         textarea.set_style(Style::default().fg(Color::Yellow));
         textarea.set_cursor_line_style(Style::default());
 
-        Ok(Self {
+        let mut app = Self {
             db,
             entries,
             list_state,
@@ -162,7 +163,22 @@ impl<'a> App<'a> {
             input_buffer: textarea,
             fullscreen_scroll: 0,
             selected_command: None,
-        })
+            current_output_cache: None,
+        };
+        app.update_output_cache();
+        Ok(app)
+    }
+
+    fn update_output_cache(&mut self) {
+        if let Some(i) = self.list_state.selected() {
+            if let Some(entry) = self.entries.get(i) {
+                self.current_output_cache = self.db.get_entry_output(entry.id).ok();
+            } else {
+                self.current_output_cache = None;
+            }
+        } else {
+            self.current_output_cache = None;
+        }
     }
 
     fn next(&mut self) {
@@ -180,6 +196,7 @@ impl<'a> App<'a> {
             None => 0,
         };
         self.list_state.select(Some(i));
+        self.update_output_cache();
     }
 
     fn previous(&mut self) {
@@ -197,6 +214,7 @@ impl<'a> App<'a> {
             None => 0,
         };
         self.list_state.select(Some(i));
+        self.update_output_cache();
     }
 
     fn move_entry(&mut self, direction: DbDirection) -> Result<()> {
@@ -208,13 +226,13 @@ impl<'a> App<'a> {
             // Try to keep selection on the moved item
             // If moved down, index increases. If moved up, index decreases.
             // But since we reload, we just need to find the new index of the same ID 
-            // or just adjust index if swap happened.
-            // Simpler: just adjust index if possible.
+            // or just adjust index if possible.
             let new_i = match direction {
                 DbDirection::Up => if i > 0 { i - 1 } else { i },
                 DbDirection::Down => if i < self.entries.len() - 1 { i + 1 } else { i },
             };
             self.list_state.select(Some(new_i));
+            self.update_output_cache();
         }
         Ok(())
     }
@@ -229,6 +247,7 @@ impl<'a> App<'a> {
             } else if self.entries.is_empty() {
                 self.list_state.select(None);
             }
+            self.update_output_cache();
         }
         Ok(())
     }
@@ -259,6 +278,8 @@ impl<'a> App<'a> {
             self.input_buffer.set_block(Block::default().borders(Borders::ALL).title("Edit Annotation"));
             self.input_buffer.set_style(Style::default().fg(Color::Yellow));
             self.input_buffer.set_cursor_line_style(Style::default());
+            // Re-select same index
+            self.list_state.select(Some(i));
         }
         Ok(())
     }
@@ -280,7 +301,7 @@ impl<'a> App<'a> {
     }
 
     fn refresh_entries(&mut self) -> Result<()> {
-        self.entries = self.db.get_all_entries_ordered()?;
+        self.entries = self.db.get_all_entry_summaries()?;
         Ok(())
     }
 }
@@ -346,14 +367,12 @@ fn render_main_layout(f: &mut Frame, app: &mut App) {
     f.render_stateful_widget(list, content_chunks[0], &mut app.list_state);
 
     // Preview
-    if let Some(i) = app.list_state.selected() {
-        if let Some(entry) = app.entries.get(i) {
-            let output_text = &entry.output;
-            let p = Paragraph::new(output_text.as_str())
-                .block(Block::default().borders(Borders::ALL).title("Output Preview"))
-                .wrap(Wrap { trim: true });
-            f.render_widget(p, content_chunks[1]);
-        }
+    if app.list_state.selected().is_some() {
+        let output_text = app.current_output_cache.as_deref().unwrap_or("Loading...");
+        let p = Paragraph::new(output_text)
+            .block(Block::default().borders(Borders::ALL).title("Output Preview"))
+            .wrap(Wrap { trim: true });
+        f.render_widget(p, content_chunks[1]);
     } else {
         let p = Paragraph::new("No command selected")
             .block(Block::default().borders(Borders::ALL).title("Output Preview"));
@@ -382,8 +401,8 @@ fn render_fullscreen_output(f: &mut Frame, app: &mut App) {
     // Render output content
     if let Some(i) = app.list_state.selected() {
         if let Some(entry) = app.entries.get(i) {
-            let output_text = &entry.output;
-            let p = Paragraph::new(output_text.as_str())
+            let output_text = app.current_output_cache.as_deref().unwrap_or("Loading...");
+            let p = Paragraph::new(output_text)
                 .block(
                     Block::default()
                         .borders(Borders::ALL)

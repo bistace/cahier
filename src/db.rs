@@ -18,6 +18,16 @@ pub struct Entry {
     pub rank: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct EntrySummary {
+    pub id: i64,
+    pub command: String,
+    pub exit_code: Option<i32>,
+    pub duration_ms: i64,
+    pub annotation: Option<String>,
+    pub rank: i64,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum Direction {
     Up,
@@ -203,6 +213,39 @@ impl Database {
             entries.push(row?);
         }
         Ok(entries)
+    }
+
+    pub fn get_all_entry_summaries(&self) -> Result<Vec<EntrySummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, command, exit_code, duration_ms, annotation, rank 
+             FROM entries ORDER BY rank ASC"
+        )?;
+        
+        let rows = stmt.query_map([], |row| {
+            Ok(EntrySummary {
+                id: row.get(0)?,
+                command: row.get(1)?,
+                exit_code: row.get(2)?,
+                duration_ms: row.get(3)?,
+                annotation: row.get(4)?,
+                rank: row.get(5)?,
+            })
+        })?;
+
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?);
+        }
+        Ok(entries)
+    }
+
+    pub fn get_entry_output(&self, id: i64) -> Result<String> {
+        let output: String = self.conn.query_row(
+            "SELECT output FROM entries WHERE id = ?1",
+            params![id],
+            |row| row.get(0)
+        ).context("Failed to fetch output")?;
+        Ok(output)
     }
 
     #[cfg(test)]

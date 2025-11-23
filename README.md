@@ -15,6 +15,7 @@ Unlike standard shell history which only saves command strings, Cahier preserves
 - **Privacy Control**: Prefix any command with `nr` (no-record) to execute it without logging (e.g., `nr echo secret`).
 - **Modern REPL Experience**: Built on `reedline`, offering syntax highlighting and file/command autocompletion.
 - **Alias Support**: Automatically loads aliases from your shell configuration.
+- **Security**: Stores all logs and outputs in strict local directories (`0700`/`0600` permissions on Unix) to protect your session data from other users.
 
 ## Installation
 
@@ -59,6 +60,7 @@ Inside Cahier, use your shell commands as usual.
   ```bash
   nr export API_KEY="12345"
   ```
+  Using `nr` prevents the command from being saved to the database **and** ensures its output is not captured or saved to any file.
 
 ### Exporting History
 

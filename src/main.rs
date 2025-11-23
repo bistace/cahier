@@ -37,7 +37,20 @@ enum Commands {
 
 fn main() -> Result<()> {
     // Ensure cahier directory exists
-    std::fs::create_dir_all(CAHIER_DIR).context("Failed to create cahier directory")?;
+    if !std::path::Path::new(CAHIER_DIR).exists() {
+        std::fs::create_dir_all(CAHIER_DIR).context("Failed to create cahier directory")?;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata = std::fs::metadata(CAHIER_DIR)?;
+        let mut perms = metadata.permissions();
+        if perms.mode() & 0o777 != 0o700 {
+            perms.set_mode(0o700);
+            std::fs::set_permissions(CAHIER_DIR, perms).context("Failed to set cahier directory permissions")?;
+        }
+    }
 
     let args = Args::parse();
     let db = db::Database::init(DB_FILENAME).context("Failed to initialize database")?;

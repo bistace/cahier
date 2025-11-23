@@ -15,6 +15,108 @@ use crate::highlighter::SyntectHighlighter;
 use crate::prompt::CahierPrompt;
 use crate::command::{self, Registry, CommandContext, CommandResult};
 
+/// Resolves the absolute path to the database
+fn resolve_db_path() -> String {
+    let db_path_buf = std::fs::canonicalize(DB_FILENAME)
+        .unwrap_or_else(|_| std::path::PathBuf::from(DB_FILENAME));
+    db_path_buf.to_string_lossy().to_string()
+}
+
+/// Initializes the Reedline editor with history, completion, keybindings, etc.
+fn setup_line_editor(
+    config: &Config,
+    current_env: Arc<Mutex<HashMap<String, String>>>,
+    aliases: Arc<Mutex<HashMap<String, String>>>,
+    builtins: Vec<String>,
+) -> Result<Reedline> {
+    let history = Box::new(
+        FileBackedHistory::with_file(MAX_HISTORY_ENTRIES, HISTORY_FILENAME.into())
+            .map_err(|e| anyhow::anyhow!("Error creating history file: {:?}", e))?,
+    );
+    
+    let mut keybindings = reedline::default_emacs_keybindings();
+    keybindings.add_binding(
+        KeyModifiers::from_bits_truncate(0),
+        KeyCode::Tab,
+        ReedlineEvent::Menu("completion_menu".to_string()),
+    );
+    let edit_mode = Emacs::new(keybindings);
+
+    let line_editor = Reedline::create()
+        .with_history(history)
+        .with_completer(Box::new(CahierCompleter::new(
+            current_env,
+            aliases,
+            builtins
+        )))
+        .with_quick_completions(true)
+        .with_menu(ReedlineMenu::EngineCompleter(Box::new(ColumnarMenu::default().with_name("completion_menu"))))
+        .with_edit_mode(Box::new(edit_mode))
+        .with_highlighter(Box::new(SyntectHighlighter::new(config.theme.clone())));
+        
+    Ok(line_editor)
+}
+
+/// Processes the input string to handle aliases and the 'nr' prefix
+fn process_input(input: &str, aliases: &Arc<Mutex<HashMap<String, String>>>) -> (String, bool) {
+    // Expand aliases
+    let expanded_input_raw = alias::expand_alias(input, aliases);
+    
+    // Check for nr prefix to skip logging
+    let trimmed = expanded_input_raw.trim_start();
+    if let Some(stripped) = trimmed.strip_prefix("nr ") {
+        // If we found 'nr', we need to try expanding aliases again
+        // because the command after 'nr' might be an alias
+        (alias::expand_alias(stripped, aliases), false)
+    } else {
+        (expanded_input_raw, true)
+    }
+}
+
+/// Executes an external command in the PTY
+fn execute_external_command(
+    input: &str,
+    expanded_input: &str,
+    should_log: bool,
+    context: &mut CommandContext,
+    config: &Config,
+) -> Result<()> {
+    let start = Instant::now();
+
+    // Check if command should have output captured
+    // Use the expanded command name for this check
+    // Note: If should_log is false (due to 'nr' prefix), we also disable output capture
+    // to ensure no persistent record (file or DB) is created.
+    let cmd_name = expanded_input.split_whitespace().next().unwrap_or("");
+    let capture_output = should_log && !config.ignored_outputs.iter().any(|ignored| ignored == cmd_name);
+
+    match executor::execute_in_pty(
+        expanded_input,
+        context.max_output_size,
+        context.pty_writer,
+        context.current_env,
+        capture_output,
+        false
+    ) {
+        Ok(res) => {
+             println!(); // Add newline between command output and next prompt
+             
+             // Log the ORIGINAL input
+             if let Err(e) = command::handle_execution_result(res, start, input, context) {
+                 eprintln!("Error processing execution result: {}", e);
+                 context.prompt.set_last_success(false);
+                 context.prompt.set_last_duration(Some(start.elapsed()));
+             }
+        }
+        Err(e) => {
+            eprintln!("Execution error: {}", e);
+            context.prompt.set_last_success(false);
+            context.prompt.set_last_duration(Some(start.elapsed()));
+        }
+    }
+    Ok(())
+}
+
 /// Runs the interactive REPL loop
 ///
 /// # Arguments
@@ -30,27 +132,10 @@ pub fn run_repl(
 ) -> Result<()> {
     println!("Cahier started.");
     
-    // Resolve absolute path to database to ensure we can always connect to it
-    // even after changing directories
-    let db_path_buf = std::fs::canonicalize(DB_FILENAME)
-        .unwrap_or_else(|_| std::path::PathBuf::from(DB_FILENAME));
-    let db_path_str = db_path_buf.to_string_lossy().to_string();
+    let db_path_str = resolve_db_path();
     
     println!("Database: {}", db_path_str);
     println!("Max output size: {} bytes", max_output_size);
-
-    let history = Box::new(
-        FileBackedHistory::with_file(MAX_HISTORY_ENTRIES, HISTORY_FILENAME.into())
-            .map_err(|e| anyhow::anyhow!("Error creating history file: {:?}", e))?,
-    );
-    // Bind Tab to the completion menu
-    let mut keybindings = reedline::default_emacs_keybindings();
-    keybindings.add_binding(
-        KeyModifiers::from_bits_truncate(0),
-        KeyCode::Tab,
-        ReedlineEvent::Menu("completion_menu".to_string()),
-    );
-    let edit_mode = Emacs::new(keybindings);
 
     // Initialize current environment
     let current_env: Arc<Mutex<HashMap<String, String>>> = 
@@ -78,17 +163,13 @@ pub fn run_repl(
 
     let builtins = registry.command_names();
 
-    let mut line_editor = Reedline::create()
-        .with_history(history)
-        .with_completer(Box::new(CahierCompleter::new(
-            current_env.clone(),
-            aliases.clone(),
-            builtins
-        )))
-        .with_quick_completions(true)
-        .with_menu(ReedlineMenu::EngineCompleter(Box::new(ColumnarMenu::default().with_name("completion_menu"))))
-        .with_edit_mode(Box::new(edit_mode))
-        .with_highlighter(Box::new(SyntectHighlighter::new(config.theme.clone())));
+    let mut line_editor = setup_line_editor(
+        &config,
+        current_env.clone(),
+        aliases.clone(),
+        builtins
+    )?;
+    
     let mut prompt = CahierPrompt::new();
 
     let mut jobs: Vec<Job> = Vec::new();
@@ -115,40 +196,27 @@ pub fn run_repl(
 
                 let start_total = Instant::now();
 
-                // Expand aliases
-                let expanded_input_raw = alias::expand_alias(input, &aliases);
-                
-                // Check for nr prefix to skip logging
-                let (expanded_input, should_log) = {
-                    let trimmed = expanded_input_raw.trim_start();
-                    if let Some(stripped) = trimmed.strip_prefix("nr ") {
-                        // If we found 'nr', we need to try expanding aliases again
-                        // because the command after 'nr' might be an alias
-                        (alias::expand_alias(stripped, &aliases), false)
-                    } else {
-                        (expanded_input_raw, true)
-                    }
-                };
+                let (expanded_input, should_log) = process_input(input, &aliases);
                 
                 // Check for built-in commands
                 let args_owned = shlex::split(&expanded_input).unwrap_or_default();
                 let args: Vec<&str> = args_owned.iter().map(|s| s.as_str()).collect();
+                
+                let mut context = CommandContext {
+                    db: &db,
+                    current_env: &current_env,
+                    jobs: &mut jobs,
+                    pty_writer: &pty_writer,
+                    max_output_size,
+                    prompt: &mut prompt,
+                    aliases: &aliases,
+                    should_log,
+                    db_path: &db_path_str,
+                    next_command: &mut next_command,
+                };
 
                 if let Some(cmd_name) = args.first() {
                     if let Some(cmd) = registry.get(cmd_name) {
-                        let mut context = CommandContext {
-                            db: &db,
-                            current_env: &current_env,
-                            jobs: &mut jobs,
-                            pty_writer: &pty_writer,
-                            max_output_size,
-                            prompt: &mut prompt,
-                            aliases: &aliases,
-                            should_log,
-                            db_path: &db_path_str,
-                            next_command: &mut next_command,
-                        };
-                        
                         match cmd.execute(&args[1..], &mut context) {
                             Ok(CommandResult::Exit) => break,
                             Ok(CommandResult::Continue) => {
@@ -170,45 +238,7 @@ pub fn run_repl(
                     }
                 }
 
-                // Execute command in PTY
-                let start = Instant::now();
-
-                // Check if command should have output captured
-                // Use the expanded command name for this check
-                let cmd_name = expanded_input.split_whitespace().next().unwrap_or("");
-                let capture_output = !config.ignored_outputs.iter().any(|ignored| ignored == cmd_name);
-
-                match executor::execute_in_pty(&expanded_input, max_output_size, &pty_writer, &current_env, capture_output, false)
-                {
-                    Ok(res) => {
-                         println!(); // Add newline between command output and next prompt
-                         
-                         let mut context = CommandContext {
-                            db: &db,
-                            current_env: &current_env,
-                            jobs: &mut jobs,
-                            pty_writer: &pty_writer,
-                            max_output_size,
-                            prompt: &mut prompt,
-                            aliases: &aliases,
-                            should_log,
-                            db_path: &db_path_str,
-                            next_command: &mut next_command,
-                        };
-                        
-                         // Log the ORIGINAL input
-                         if let Err(e) = command::handle_execution_result(res, start, input, &mut context) {
-                             eprintln!("Error processing execution result: {}", e);
-                             prompt.set_last_success(false);
-                             prompt.set_last_duration(Some(start.elapsed()));
-                         }
-                    }
-                    Err(e) => {
-                        eprintln!("Execution error: {}", e);
-                        prompt.set_last_success(false);
-                        prompt.set_last_duration(Some(start.elapsed()));
-                    }
-                }
+                execute_external_command(input, &expanded_input, should_log, &mut context, &config)?;
             }
             Ok(Signal::CtrlC) => {
                 // Handle Ctrl+C at prompt - just continue to next prompt

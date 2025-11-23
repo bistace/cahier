@@ -196,7 +196,22 @@ impl OutputHandler {
     fn handle_data(&mut self, data: &[u8]) -> std::io::Result<()> {
         if self.capture_output && self.captured_output.len() + data.len() > self.max_output_size && self.output_file.is_none() {
             let output_dir = PathBuf::from(OUTPUT_DIR);
-            let _ = std::fs::create_dir_all(&output_dir);
+            if !output_dir.exists() {
+                let _ = std::fs::create_dir_all(&output_dir);
+                
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(metadata) = std::fs::metadata(&output_dir) {
+                        let mut perms = metadata.permissions();
+                        if perms.mode() & 0o777 != 0o700 {
+                            perms.set_mode(0o700);
+                            let _ = std::fs::set_permissions(&output_dir, perms);
+                        }
+                    }
+                }
+            }
+
             let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
             let filename = format!("output_{}.txt", timestamp);
             let filepath = output_dir.join(&filename);
@@ -463,6 +478,60 @@ fn process_env_dump(
 }
 
 
+/// Runs the main monitoring loop checking for process status and PTY output
+fn run_monitoring_loop(
+    child: &mut Box<dyn Child + Send + Sync>,
+    master_fd: i32,
+    reader: &mut Box<dyn Read + Send>,
+    output_handler: &mut OutputHandler,
+) -> Result<(Option<i32>, bool)> {
+    let mut buf = [0u8; 1024];
+    let mut exit_code = None;
+    let mut suspended = false;
+
+    loop {
+        // 1. Check process status (non-blocking)
+        if let Some(code) = check_process_status(child, &mut suspended) {
+            exit_code = Some(code);
+        }
+        
+        if suspended {
+            break;
+        }
+
+        // 2. Poll for data with timeout
+        let eof = poll_pty_output(master_fd, reader, output_handler, &mut buf)?;
+        
+        if eof {
+            break;
+        }
+    }
+
+    // Ensure exit code is set if we broke out due to EOF but waitpid didn't catch it yet
+    if exit_code.is_none() && !suspended {
+         #[cfg(unix)]
+         {
+             if let Some(pid_val) = child.process_id() {
+                 let pid = Pid::from_raw(pid_val as i32);
+                 // Wait blocking now since we are done reading
+                 match waitpid(pid, None) {
+                     Ok(WaitStatus::Exited(_, code)) => { exit_code = Some(code); }
+                     Ok(WaitStatus::Signaled(_, sig, _)) => { exit_code = Some(128 + (sig as i32)); }
+                     _ => {}
+                 }
+             }
+         }
+         #[cfg(not(unix))]
+         {
+             if let Ok(status) = child.wait() {
+                 exit_code = if status.success() { Some(0) } else { Some(1) };
+             }
+         }
+    }
+
+    Ok((exit_code, suspended))
+}
+
 /// Monitors the execution of a PTY process (handles I/O and waiting)
 fn monitor_execution(
     mut child: Box<dyn Child + Send + Sync>,
@@ -494,14 +563,10 @@ fn monitor_execution(
     // Spawn a thread to forward stdin to the PTY master
     let input_thread = spawn_input_forwarding_thread(Arc::clone(pty_writer), Arc::clone(&finished));
 
-    let mut buf = [0u8; 1024];
     let mut output_handler = OutputHandler::new(config.max_output_size, config.capture_output, config.suppress_output);
 
     // Ensure env dump file is cleaned up
     let _env_dump_guard = EnvDumpGuard(config.env_dump_path.clone());
-
-    let mut exit_code = None;
-    let mut suspended = false;
 
     #[cfg(unix)]
     // We assume master_fd is valid on Unix.
@@ -509,55 +574,12 @@ fn monitor_execution(
     #[cfg(not(unix))]
     let master_fd = 0; // Dummy for non-unix
 
-    // Loop to check status and read
-    loop {
-        // 1. Check process status (non-blocking)
-        if let Some(code) = check_process_status(&mut child, &mut suspended) {
-            exit_code = Some(code);
-        }
-        
-        if suspended {
-            break;
-        }
-
-        // 2. Poll for data with timeout
-        let eof = poll_pty_output(master_fd, &mut reader, &mut output_handler, &mut buf)?;
-        
-        if eof {
-            break;
-        }
-        
-        if exit_code.is_some() {
-             // Continue reading until EOF? 
-             // Usually if exit_code is set, we expect EOF soon. 
-             // But we should loop until EOF if possible to get all output.
-             // However, simplistic approach is break if we have exit code and no data was ready in poll (timeout).
-             // The poll timeout allows us to drain remaining buffer.
-             // Let's rely on poll returning eof or timeout.
-        }
-    }
-
-    // Ensure exit code is set if we broke out due to EOF but waitpid didn't catch it yet
-    if exit_code.is_none() && !suspended {
-         #[cfg(unix)]
-         {
-             if let Some(pid_val) = child.process_id() {
-                 let pid = Pid::from_raw(pid_val as i32);
-                 // Wait blocking now since we are done reading
-                 match waitpid(pid, None) {
-                     Ok(WaitStatus::Exited(_, code)) => { exit_code = Some(code); }
-                     Ok(WaitStatus::Signaled(_, sig, _)) => { exit_code = Some(128 + (sig as i32)); }
-                     _ => {}
-                 }
-             }
-         }
-         #[cfg(not(unix))]
-         {
-             if let Ok(status) = child.wait() {
-                 exit_code = if status.success() { Some(0) } else { Some(1) };
-             }
-         }
-    }
+    let (exit_code, suspended) = run_monitoring_loop(
+        &mut child,
+        master_fd,
+        &mut reader,
+        &mut output_handler,
+    )?;
     
     // Signal input thread to stop
     finished.store(true, Ordering::Relaxed);
