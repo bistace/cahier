@@ -20,3 +20,6 @@ pub const OUTPUT_DIR: &str = "cahier_logs/outputs";
 
 /// Directory for temporary files (e.g. env dumps)
 pub const TEMP_DIR: &str = "cahier_logs/tmp";
+
+/// File to store environment state
+pub const ENV_STORE_FILENAME: &str = "cahier_logs/env_state.json";

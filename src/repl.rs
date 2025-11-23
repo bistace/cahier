@@ -137,9 +137,59 @@ pub fn run_repl(
     println!("Database: {}", db_path_str);
     println!("Max output size: {} bytes", max_output_size);
 
+    // Resolve absolute path for environment store
+    let env_store_path = std::env::current_dir()
+        .map(|cwd| cwd.join(crate::common::ENV_STORE_FILENAME))
+        .unwrap_or_else(|_| std::path::PathBuf::from(crate::common::ENV_STORE_FILENAME));
+
     // Initialize current environment
+    let mut env_map: HashMap<String, String> = std::env::vars().collect();
+
+    if config.restore_env {
+        println!("Restoring environment...");
+        match crate::env_store::load_env(&env_store_path) {
+            Ok(persisted_env) => {
+                // Try to restore working directory first
+                if let Some(pwd) = persisted_env.get("PWD") {
+                    match std::env::set_current_dir(pwd) {
+                        Ok(_) => {
+                            // Successfully restored, merge all persisted variables
+                            for (k, v) in persisted_env {
+                                env_map.insert(k, v);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Warning: Failed to restore working directory ({}): {}", pwd, e);
+                            // Directory doesn't exist, merge persisted vars but update PWD to current dir
+                            for (k, v) in persisted_env {
+                                env_map.insert(k, v);
+                            }
+                            // Update PWD to reflect actual current directory
+                            if let Ok(cwd) = std::env::current_dir() {
+                                env_map.insert("PWD".to_string(), cwd.to_string_lossy().to_string());
+                            }
+                        }
+                    }
+                } else {
+                    // No PWD in persisted env, just merge
+                    for (k, v) in persisted_env {
+                        env_map.insert(k, v);
+                    }
+                }
+            }
+            Err(e) => {
+                 eprintln!("Failed to load persisted environment: {}", e);
+            }
+        }
+    } else {
+        // Ensure PWD in env map matches actual current dir when not restoring
+        if let Ok(cwd) = std::env::current_dir() {
+            env_map.insert("PWD".to_string(), cwd.to_string_lossy().to_string());
+        }
+    }
+
     let current_env: Arc<Mutex<HashMap<String, String>>> = 
-        Arc::new(Mutex::new(std::env::vars().collect()));
+        Arc::new(Mutex::new(env_map));
 
     let mut registry = Registry::new();
     registry.register(Box::new(command::CdCommand));
@@ -220,6 +270,14 @@ pub fn run_repl(
                         match cmd.execute(&args[1..], &mut context) {
                             Ok(CommandResult::Exit) => break,
                             Ok(CommandResult::Continue) => {
+                                if config.restore_env {
+                                    if let Ok(env) = context.current_env.lock() {
+                                        if let Err(e) = crate::env_store::save_env(&env, &env_store_path) {
+                                            eprintln!("Failed to save environment: {}", e);
+                                        }
+                                    }
+                                }
+
                                 if let Some(cmd) = next_command.take() {
                                     let _ = line_editor.history_mut().save(HistoryItem::from_command_line(&cmd));
                                     let _ = line_editor.sync_history();
@@ -239,6 +297,14 @@ pub fn run_repl(
                 }
 
                 execute_external_command(input, &expanded_input, should_log, &mut context, &config)?;
+                
+                if config.restore_env {
+                    if let Ok(env) = context.current_env.lock() {
+                         if let Err(e) = crate::env_store::save_env(&env, &env_store_path) {
+                              eprintln!("Failed to save environment: {}", e);
+                         }
+                    }
+                }
             }
             Ok(Signal::CtrlC) => {
                 // Handle Ctrl+C at prompt - just continue to next prompt

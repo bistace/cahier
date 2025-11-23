@@ -4,6 +4,7 @@ pub mod common;
 pub mod completion;
 pub mod config;
 pub mod db;
+pub mod env_store;
 pub mod executor;
 pub mod export;
 pub mod highlighter;

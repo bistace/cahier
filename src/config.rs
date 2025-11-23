@@ -13,6 +13,8 @@ pub struct Config {
     pub theme: String,
     #[serde(default = "default_load_aliases")]
     pub load_aliases: bool,
+    #[serde(default = "default_restore_env")]
+    pub restore_env: bool,
 }
 
 fn default_ignored_outputs() -> Vec<String> {
@@ -48,12 +50,17 @@ fn default_load_aliases() -> bool {
     true
 }
 
+fn default_restore_env() -> bool {
+    true
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             ignored_outputs: default_ignored_outputs(),
             theme: default_theme(),
             load_aliases: default_load_aliases(),
+            restore_env: default_restore_env(),
         }
     }
 }
