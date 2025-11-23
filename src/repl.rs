@@ -49,6 +49,7 @@ pub fn run_repl(
     let mut line_editor = Reedline::create()
         .with_history(history)
         .with_completer(Box::new(FileCompleter::new(current_env.clone())))
+        .with_quick_completions(true)
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(ColumnarMenu::default().with_name("completion_menu"))))
         .with_edit_mode(Box::new(edit_mode));
     let mut prompt = CahierPrompt::new();
