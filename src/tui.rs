@@ -351,7 +351,7 @@ fn render_main_layout(f: &mut Frame, app: &mut App) {
             };
 
             if annotation.is_empty() {
-                let id_span = Span::styled(format!("[{}]", e.id), Style::default().fg(id_color));
+                let id_span = Span::styled(format!("[{}]", e.rank), Style::default().fg(id_color));
                 let command_span = Span::raw(format!(" {}", e.command));
                 ListItem::new(Line::from(vec![id_span, command_span]))
             } else {
@@ -360,7 +360,7 @@ fn render_main_layout(f: &mut Frame, app: &mut App) {
                 for line in wrapped {
                     lines.push(Line::styled(line.to_string(), Style::default().fg(Color::Yellow)));
                 }
-                let id_span = Span::styled(format!("[{}]", e.id), Style::default().fg(id_color));
+                let id_span = Span::styled(format!("[{}]", e.rank), Style::default().fg(id_color));
                 let command_span = Span::raw(format!(" {}", e.command));
                 lines.push(Line::from(vec![id_span, command_span]));
                 ListItem::new(lines)
