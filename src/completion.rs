@@ -187,6 +187,10 @@ impl Completer for CahierCompleter {
         
         // Otherwise, do file completion
         let path = Path::new(word);
+
+        let filename_offset = word.rfind(|c| c == MAIN_SEPARATOR || c == '/')
+            .map(|i| i + 1)
+            .unwrap_or(0);
         
         let (dir, file_name) = if word.ends_with(MAIN_SEPARATOR) {
             (path, "")
@@ -215,26 +219,23 @@ impl Completer for CahierCompleter {
             };
             
             if name.starts_with(file_name) {
-                 let value = if dir == Path::new(".") {
-                     name.to_string()
-                 } else {
-                     let mut p = dir.to_path_buf();
-                     p.push(name);
-                     p.to_string_lossy().to_string()
-                 };
+                 let mut value = name.to_string();
                  
                  let is_dir = path.is_dir();
-                 let (value, append_whitespace) = if is_dir {
-                     (format!("{}{}", value, MAIN_SEPARATOR), false)
+                 let append_whitespace;
+
+                 if is_dir {
+                     value.push(MAIN_SEPARATOR);
+                     append_whitespace = false;
                  } else {
-                     (value, true)
-                 };
+                     append_whitespace = true;
+                 }
                  
                  suggestions.push(Suggestion {
                      value,
                      description: None,
                      extra: None,
-                     span: Span { start, end: pos },
+                     span: Span { start: start + filename_offset, end: pos },
                      append_whitespace,
                  });
             }
