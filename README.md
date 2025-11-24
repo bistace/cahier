@@ -107,13 +107,17 @@ Cahier creates a configuration file at `~/.cahier/config.json`. You can customiz
     "nano", "vim", "nvim", "htop", "ssh", "less", "man", "tmux"
   ],
   "theme": "Solarized (dark)",
-  "load_aliases": true
+  "load_aliases": true,
+  "restore_env": false
 }
 ```
 
-- **`ignored_outputs`**: A list of command names whose output should not be captured (e.g., text editors, interactive TUI tools).
+- **`ignored_outputs`**: A list of command names that should not be captured (e.g., text editors, interactive TUI tools).
 - **`theme`**: Syntax highlighting theme (e.g., "Solarized (dark)", "Solarized (light)", "InspiredGitHub").
 - **`load_aliases`**: Whether to import aliases from your parent shell (bash/zsh/etc).
+- **`restore_env`**: Whether to persist environment variables (like `export VAR=...`) across sessions.
+  - **Default**: `false`
+  - **Security Warning**: Enabling this (`true`) will save your environment variables to a local file. Be careful if you work with sensitive secrets (API keys, tokens) in your environment, as they will be written to disk. When disabled, environment variables persist only for the duration of the current session.
 
 ## Technical Architecture
 

@@ -51,7 +51,7 @@ fn default_load_aliases() -> bool {
 }
 
 fn default_restore_env() -> bool {
-    true
+    false
 }
 
 impl Default for Config {
