@@ -99,6 +99,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, db: Database) -> R
                             }
                         },
                         KeyCode::Char('a') => app.start_editing_annotation(),
+                        KeyCode::Char(' ') => app.insert_separator()?,
                         KeyCode::Char('s') => {
                             if let Some(i) = app.list_state.selected() {
                                 if let Some(entry) = app.entries.get(i) {
@@ -252,6 +253,36 @@ impl<'a> App<'a> {
         Ok(())
     }
 
+    fn insert_separator(&mut self) -> Result<()> {
+        let current_rank = if let Some(i) = self.list_state.selected() {
+            if let Some(entry) = self.entries.get(i) {
+                entry.rank
+            } else {
+                // Should not happen if list_state has selection
+                0
+            }
+        } else {
+            // If nothing selected (empty list or whatever), we can insert at rank 1
+            0
+        };
+
+        // Insert after the current selection
+        self.db.insert_separator(current_rank + 1)?;
+        self.refresh_entries()?;
+        
+        // Select the new separator
+        if let Some(i) = self.list_state.selected() {
+             if i < self.entries.len() - 1 {
+                self.list_state.select(Some(i + 1));
+             }
+        } else if !self.entries.is_empty() {
+             self.list_state.select(Some(0));
+        }
+
+        self.update_output_cache();
+        Ok(())
+    }
+
     fn start_editing_annotation(&mut self) {
         if let Some(i) = self.list_state.selected() {
             self.input_mode = InputMode::EditingAnnotation;
@@ -344,6 +375,12 @@ fn render_main_layout(f: &mut Frame, app: &mut App) {
     let items: Vec<ListItem> = app.entries
         .iter()
         .map(|e| {
+            if e.is_separator {
+                 let separator = " --- ";
+                 let content = Line::styled(separator, Style::default().fg(Color::DarkGray));
+                 return ListItem::new(content);
+            }
+
             let annotation = e.annotation.as_deref().unwrap_or("");
             let id_color = match e.exit_code {
                 Some(0) => Color::Blue,
@@ -389,7 +426,7 @@ fn render_main_layout(f: &mut Frame, app: &mut App) {
     }
     
     // Status bar
-    let status_text = "j/k: Navigate | J/K: Move | d: Delete | a: Annotate | s: Send to REPL | Enter: Fullscreen | q: Quit";
+    let status_text = "j/k: Navigate | J/K: Move | d: Delete | a: Annotate | Space: Separator | s: Send to REPL | Enter: Fullscreen | q: Quit";
     let status = Paragraph::new(status_text)
         .style(Style::default().bg(Color::Blue).fg(Color::White));
     f.render_widget(status, chunks[1]);

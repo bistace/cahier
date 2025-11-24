@@ -6,6 +6,9 @@ use crate::db;
 pub fn generate_commands_text(db: &db::Database) -> Result<String> {
     let mut text = String::new();
     db.iterate_entries(|entry| {
+        if entry.is_separator {
+            return Ok(());
+        }
         text.push_str(&entry.command);
         text.push('\n');
         Ok(())
@@ -19,6 +22,11 @@ pub fn generate_markdown(db: &db::Database) -> Result<String> {
     md.push_str("# Cahier Export\n\n");
 
     db.iterate_entries(|entry| {
+        if entry.is_separator {
+            md.push_str("\n---\n\n");
+            return Ok(());
+        }
+
         // Annotation (if present)
         if let Some(annotation) = &entry.annotation {
             if !annotation.is_empty() {
@@ -161,6 +169,24 @@ mod tests {
         // Should still have the command
         assert!(md.contains("$ cd /tmp"));
         assert!(md.contains("(0 - 10ms)"));
+        
+        Ok(())
+    }
+
+    #[test]
+    fn test_generate_markdown_with_separator() -> Result<()> {
+        let db = db::Database::init_memory()?;
+        
+        // Add entries and separator
+        db.log_entry("echo before", "output\n", Some(0), 100, None)?;
+        db.insert_separator(2)?; // Rank 2
+        db.log_entry("echo after", "output\n", Some(0), 100, None)?;
+        
+        let md = generate_markdown(&db)?;
+        
+        assert!(md.contains("$ echo before"));
+        assert!(md.contains("\n---\n\n"));
+        assert!(md.contains("$ echo after"));
         
         Ok(())
     }

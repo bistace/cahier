@@ -16,6 +16,7 @@ pub struct Entry {
     pub output_file: Option<String>,
     pub annotation: Option<String>,
     pub rank: i64,
+    pub is_separator: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -26,6 +27,7 @@ pub struct EntrySummary {
     pub duration_ms: i64,
     pub annotation: Option<String>,
     pub rank: i64,
+    pub is_separator: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -88,6 +90,17 @@ impl Database {
              conn.execute("UPDATE entries SET rank = id", []).context("Failed to initialize rank")?;
         }
 
+        // Migrate for is_separator
+        let separator_exists: Result<i32, _> = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('entries') WHERE name='is_separator'",
+            [],
+            |row| row.get(0),
+        );
+
+        if let Ok(0) = separator_exists {
+            conn.execute("ALTER TABLE entries ADD COLUMN is_separator INTEGER DEFAULT 0", []).context("Failed to add is_separator column")?;
+        }
+
         // Attempt to drop legacy columns if they exist (SQLite 3.35.0+)
         // We ignore errors because they might not exist or SQLite version might be old
         let _ = conn.execute("ALTER TABLE entries DROP COLUMN cwd", []);
@@ -118,8 +131,8 @@ impl Database {
         ).unwrap_or(1);
 
         self.conn.execute(
-            "INSERT INTO entries (command, output, exit_code, duration_ms, output_file, rank)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO entries (command, output, exit_code, duration_ms, output_file, rank, is_separator)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
             params![
                 command,
                 output,
@@ -129,6 +142,23 @@ impl Database {
                 next_rank
             ],
         ).context("Failed to insert log entry")?;
+        Ok(())
+    }
+
+    pub fn insert_separator(&self, target_rank: i64) -> Result<()> {
+        // Shift existing ranks
+        self.conn.execute(
+            "UPDATE entries SET rank = rank + 1 WHERE rank >= ?1",
+            params![target_rank],
+        ).context("Failed to shift ranks for separator")?;
+
+        // Insert separator
+        self.conn.execute(
+            "INSERT INTO entries (command, output, rank, is_separator, duration_ms)
+             VALUES ('', '', ?1, 1, 0)",
+            params![target_rank],
+        ).context("Failed to insert separator")?;
+
         Ok(())
     }
 
@@ -191,7 +221,7 @@ impl Database {
 
     pub fn get_all_entries_ordered(&self) -> Result<Vec<Entry>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, command, output, exit_code, duration_ms, output_file, annotation, rank 
+            "SELECT id, command, output, exit_code, duration_ms, output_file, annotation, rank, is_separator 
              FROM entries ORDER BY rank ASC"
         )?;
         
@@ -205,6 +235,7 @@ impl Database {
                 output_file: row.get(5)?,
                 annotation: row.get(6)?,
                 rank: row.get(7)?,
+                is_separator: row.get::<_, i32>(8)? != 0,
             })
         })?;
 
@@ -217,7 +248,7 @@ impl Database {
 
     pub fn get_all_entry_summaries(&self) -> Result<Vec<EntrySummary>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, command, exit_code, duration_ms, annotation, rank 
+            "SELECT id, command, exit_code, duration_ms, annotation, rank, is_separator 
              FROM entries ORDER BY rank ASC"
         )?;
         
@@ -229,6 +260,7 @@ impl Database {
                 duration_ms: row.get(3)?,
                 annotation: row.get(4)?,
                 rank: row.get(5)?,
+                is_separator: row.get::<_, i32>(6)? != 0,
             })
         })?;
 
@@ -263,7 +295,7 @@ impl Database {
         F: FnMut(Entry) -> Result<()>,
     {
         let mut stmt = self.conn.prepare(
-            "SELECT id, command, output, exit_code, duration_ms, output_file, annotation, rank 
+            "SELECT id, command, output, exit_code, duration_ms, output_file, annotation, rank, is_separator 
              FROM entries ORDER BY id ASC"
         ).context("Failed to prepare iteration statement")?;
         let entry_iter = stmt.query_map([], |row| {
@@ -276,6 +308,7 @@ impl Database {
                 output_file: row.get(5)?,
                 annotation: row.get(6)?,
                 rank: row.get(7)?,
+                is_separator: row.get::<_, i32>(8)? != 0,
             })
         }).context("Failed to query entries")?;
 
