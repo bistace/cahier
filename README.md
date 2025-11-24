@@ -19,12 +19,20 @@ Unlike standard shell history which only saves command strings, Cahier preserves
 
 ## Installation
 
+### From Crates.io
+
+The easiest way to install Cahier is via Cargo:
+
+```bash
+cargo install cahier
+```
+
 ### From Source
 
 Ensure you have Rust and Cargo installed.
 
 ```bash
-git clone https://github.com/yourusername/cahier.git
+git clone https://github.com/bistace/cahier.git
 cd cahier
 cargo install --path .
 ```
