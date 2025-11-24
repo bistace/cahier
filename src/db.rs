@@ -296,7 +296,7 @@ impl Database {
     {
         let mut stmt = self.conn.prepare(
             "SELECT id, command, output, exit_code, duration_ms, output_file, annotation, rank, is_separator 
-             FROM entries ORDER BY id ASC"
+             FROM entries ORDER BY rank ASC"
         ).context("Failed to prepare iteration statement")?;
         let entry_iter = stmt.query_map([], |row| {
             Ok(Entry {
@@ -461,6 +461,38 @@ mod tests {
         assert_eq!(entries[0].command, "1");
         assert_eq!(entries[1].command, "2");
         assert_eq!(entries[2].command, "3");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_iterate_entries_ordering() -> Result<()> {
+        let db = Database::init_memory()?;
+        
+        // Insert 1, 2, 3
+        db.log_entry("1", "", None, 0, None)?;
+        db.log_entry("2", "", None, 0, None)?;
+        db.log_entry("3", "", None, 0, None)?;
+
+        // Move 3 to top (rank 1)
+        // Current ranks: 1(1), 2(2), 3(3)
+        // Move 3 up twice
+        let entries = db.get_all_entries_ordered()?;
+        let id_3 = entries[2].id;
+        
+        db.move_entry(id_3, Direction::Up)?; // swap with 2
+        db.move_entry(id_3, Direction::Up)?; // swap with 1
+        
+        // Expected order: 3, 1, 2
+        let mut commands = Vec::new();
+        db.iterate_entries(|e| {
+            commands.push(e.command);
+            Ok(())
+        })?;
+        
+        assert_eq!(commands[0], "3");
+        assert_eq!(commands[1], "1");
+        assert_eq!(commands[2], "2");
 
         Ok(())
     }
