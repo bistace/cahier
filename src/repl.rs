@@ -88,7 +88,13 @@ fn execute_external_command(
     // Note: If should_log is false (due to 'nr' prefix), we also disable output capture
     // to ensure no persistent record (file or DB) is created.
     let cmd_name = expanded_input.split_whitespace().next().unwrap_or("");
-    let capture_output = should_log && !config.ignored_outputs.iter().any(|ignored| ignored == cmd_name);
+    let is_ignored = config.ignored_outputs.iter().any(|ignored| ignored == cmd_name);
+    
+    if is_ignored {
+        context.should_log = false;
+    }
+    
+    let capture_output = should_log && !is_ignored;
 
     match executor::execute_in_pty(
         expanded_input,
