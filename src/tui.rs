@@ -45,6 +45,7 @@ struct App<'a> {
     fullscreen_scroll: u16,
     selected_command: Option<String>,
     current_output_cache: Option<String>,
+    preview_collapsed: bool,
     // For popup messages or confirmation if needed, sticking to simple for now
 }
 
@@ -113,6 +114,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, db: Database) -> R
                             // Clear terminal buffer when entering fullscreen to remove artifacts
                             terminal.clear()?;
                         },
+                        KeyCode::Char('p') => {
+                            app.toggle_preview_collapsed();
+                            terminal.clear()?;
+                        },
                         _ => {}
                     },
                     InputMode::EditingAnnotation => match key.code {
@@ -165,6 +170,7 @@ impl<'a> App<'a> {
             fullscreen_scroll: 0,
             selected_command: None,
             current_output_cache: None,
+            preview_collapsed: false,
         };
         app.update_output_cache();
         Ok(app)
@@ -320,6 +326,10 @@ impl<'a> App<'a> {
         self.fullscreen_scroll = 0;
     }
 
+    fn toggle_preview_collapsed(&mut self) {
+        self.preview_collapsed = !self.preview_collapsed;
+    }
+
     fn scroll_fullscreen_up(&mut self) {
         if self.fullscreen_scroll > 0 {
             self.fullscreen_scroll -= 1;
@@ -362,12 +372,21 @@ fn render_main_layout(f: &mut Frame, app: &mut App) {
         ])
         .split(f.area());
 
+    let content_constraints = if app.preview_collapsed {
+        vec![
+            Constraint::Percentage(100),
+            Constraint::Min(0),
+        ]
+    } else {
+        vec![
+            Constraint::Percentage(50),
+            Constraint::Percentage(50),
+        ]
+    };
+
     let content_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(50),
-            Constraint::Percentage(50),
-        ])
+        .constraints(content_constraints)
         .split(chunks[0]);
 
     // List
@@ -387,20 +406,68 @@ fn render_main_layout(f: &mut Frame, app: &mut App) {
                 _ => Color::Red,
             };
 
-            if annotation.is_empty() {
-                let id_span = Span::styled(format!("[{}]", e.rank), Style::default().fg(id_color));
-                let command_span = Span::raw(format!(" {}", e.command));
-                ListItem::new(Line::from(vec![id_span, command_span]))
-            } else {
+            if app.preview_collapsed {
+                let id_str = format!("[{}]", e.rank);
+                let id_span = Span::styled(id_str.clone(), Style::default().fg(id_color));
                 let mut lines = Vec::new();
-                let wrapped = textwrap::wrap(annotation, list_width);
-                for line in wrapped {
-                    lines.push(Line::styled(line.to_string(), Style::default().fg(Color::Yellow)));
+
+                // 1. Annotation (if any)
+                if !annotation.is_empty() {
+                    let wrapped_annotation = textwrap::wrap(annotation, list_width);
+                    for line in wrapped_annotation {
+                        lines.push(Line::styled(line.to_string(), Style::default().fg(Color::Yellow)));
+                    }
                 }
-                let id_span = Span::styled(format!("[{}]", e.rank), Style::default().fg(id_color));
-                let command_span = Span::raw(format!(" {}", e.command));
-                lines.push(Line::from(vec![id_span, command_span]));
+                
+                // 2. Command
+                // Calculate indent length
+                let indent_len = id_str.len() + 1; // +1 for space
+                let indent = " ".repeat(indent_len);
+                
+                let full_command = format!("{} {}", id_str, e.command);
+                
+                // Use textwrap with custom indentation for subsequent lines
+                let options = textwrap::Options::new(list_width)
+                    .subsequent_indent(&indent);
+                
+                let wrapped_command = textwrap::wrap(&full_command, &options);
+                
+                for (idx, line) in wrapped_command.iter().enumerate() {
+                    if idx == 0 {
+                        // Reconstruct first line with colored ID
+                        let line_str = line.to_string();
+                        if line_str.starts_with(&id_str) {
+                             let content_part = &line_str[id_str.len()..];
+                             lines.push(Line::from(vec![
+                                id_span.clone(),
+                                Span::raw(content_part.to_string())
+                            ]));
+                        } else {
+                            lines.push(Line::raw(line_str));
+                        }
+                    } else {
+                        lines.push(Line::raw(line.to_string()));
+                    }
+                }
+
                 ListItem::new(lines)
+
+            } else {
+                if annotation.is_empty() {
+                    let id_span = Span::styled(format!("[{}]", e.rank), Style::default().fg(id_color));
+                    let command_span = Span::raw(format!(" {}", e.command));
+                    ListItem::new(Line::from(vec![id_span, command_span]))
+                } else {
+                    let mut lines = Vec::new();
+                    let wrapped = textwrap::wrap(annotation, list_width);
+                    for line in wrapped {
+                        lines.push(Line::styled(line.to_string(), Style::default().fg(Color::Yellow)));
+                    }
+                    let id_span = Span::styled(format!("[{}]", e.rank), Style::default().fg(id_color));
+                    let command_span = Span::raw(format!(" {}", e.command));
+                    lines.push(Line::from(vec![id_span, command_span]));
+                    ListItem::new(lines)
+                }
             }
         })
         .collect();
@@ -413,20 +480,22 @@ fn render_main_layout(f: &mut Frame, app: &mut App) {
     f.render_stateful_widget(list, content_chunks[0], &mut app.list_state);
 
     // Preview
-    if app.list_state.selected().is_some() {
-        let output_text = app.current_output_cache.as_deref().unwrap_or("Loading...");
-        let p = Paragraph::new(output_text)
-            .block(Block::default().borders(Borders::ALL).title("Output Preview"))
-            .wrap(Wrap { trim: true });
-        f.render_widget(p, content_chunks[1]);
-    } else {
-        let p = Paragraph::new("No command selected")
-            .block(Block::default().borders(Borders::ALL).title("Output Preview"));
-        f.render_widget(p, content_chunks[1]);
+    if !app.preview_collapsed {
+        if app.list_state.selected().is_some() {
+            let output_text = app.current_output_cache.as_deref().unwrap_or("Loading...");
+            let p = Paragraph::new(output_text)
+                .block(Block::default().borders(Borders::ALL).title("Output Preview"))
+                .wrap(Wrap { trim: true });
+            f.render_widget(p, content_chunks[1]);
+        } else {
+            let p = Paragraph::new("No command selected")
+                .block(Block::default().borders(Borders::ALL).title("Output Preview"));
+            f.render_widget(p, content_chunks[1]);
+        }
     }
     
     // Status bar
-    let status_text = "j/k: Navigate | J/K: Move | d: Delete | a: Annotate | Space: Separator | s: Send to REPL | Enter: Fullscreen | q: Quit";
+    let status_text = "j/k: Navigate | J/K: Move | d: Delete | a: Annotate | Space: Separator | s: Send to REPL | Enter: Fullscreen | p: Toggle Preview | q: Quit";
     let status = Paragraph::new(status_text)
         .style(Style::default().bg(Color::Blue).fg(Color::White));
     f.render_widget(status, chunks[1]);
