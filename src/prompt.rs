@@ -50,7 +50,7 @@ impl CahierPrompt {
 }
 
 impl Prompt for CahierPrompt {
-    fn render_prompt_left(&self) -> Cow<str> {
+    fn render_prompt_left(&self) -> Cow<'_, str> {
         let username = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
         let hostname = std::fs::read_to_string("/etc/hostname")
             .map(|s| s.trim().to_string())
@@ -77,19 +77,19 @@ impl Prompt for CahierPrompt {
         Cow::Owned(colored_prompt.to_string())
     }
 
-    fn render_prompt_right(&self) -> Cow<str> {
+    fn render_prompt_right(&self) -> Cow<'_, str> {
         Cow::Borrowed("")
     }
 
-    fn render_prompt_indicator(&self, _prompt_mode: PromptEditMode) -> Cow<str> {
+    fn render_prompt_indicator(&self, _prompt_mode: PromptEditMode) -> Cow<'_, str> {
         Cow::Borrowed("> ")
     }
 
-    fn render_prompt_multiline_indicator(&self) -> Cow<str> {
+    fn render_prompt_multiline_indicator(&self) -> Cow<'_, str> {
         Cow::Borrowed(".. ")
     }
 
-    fn render_prompt_history_search_indicator(&self, history_search: PromptHistorySearch) -> Cow<str> {
+    fn render_prompt_history_search_indicator(&self, history_search: PromptHistorySearch) -> Cow<'_, str> {
         let prefix = match history_search.status {
             reedline::PromptHistorySearchStatus::Passing => "",
             reedline::PromptHistorySearchStatus::Failing => "failing ",

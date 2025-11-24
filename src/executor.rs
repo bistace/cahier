@@ -354,18 +354,18 @@ fn spawn_input_forwarding_thread(
 /// Checks the process status without blocking
 fn check_process_status(
     child: &mut Box<dyn Child + Send + Sync>,
-    suspended: &mut bool
+    _suspended: &mut bool
 ) -> Option<i32> {
     #[cfg(unix)]
     {
-        if *suspended {
+        if *_suspended {
             return None;
         }
         if let Some(pid_val) = child.process_id() {
              let pid = Pid::from_raw(pid_val as i32);
              match waitpid(pid, Some(WaitPidFlag::WNOHANG | WaitPidFlag::WUNTRACED)) {
                  Ok(WaitStatus::Stopped(_, _)) => {
-                     *suspended = true;
+                     *_suspended = true;
                      None
                  }
                  Ok(WaitStatus::Exited(_, code)) => Some(code),
@@ -390,7 +390,7 @@ fn check_process_status(
 
 /// Polls the PTY master for output data
 fn poll_pty_output(
-    master_fd: i32,
+    _master_fd: i32,
     reader: &mut Box<dyn Read + Send>,
     output_handler: &mut OutputHandler,
     buf: &mut [u8],
@@ -398,7 +398,7 @@ fn poll_pty_output(
     #[cfg(unix)]
     {
         // SAFETY: master_fd is valid and kept open by master, so borrowing it is safe.
-        let borrowed_fd = unsafe { std::os::unix::io::BorrowedFd::borrow_raw(master_fd) };
+        let borrowed_fd = unsafe { std::os::unix::io::BorrowedFd::borrow_raw(_master_fd) };
         let mut fds = [nix::poll::PollFd::new(borrowed_fd, nix::poll::PollFlags::POLLIN)];
         match nix::poll::poll(&mut fds, nix::poll::PollTimeout::from(50u16)) {
             Ok(_) => {
