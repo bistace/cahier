@@ -106,7 +106,10 @@ impl Drop for EnvDumpGuard {
 }
 
 fn create_secure_temp_file() -> Result<PathBuf> {
-    let temp_dir = PathBuf::from(TEMP_DIR);
+    // Resolve to absolute path to ensure it works even if the child process changes directory
+    let temp_dir = std::env::current_dir()
+        .context("Failed to get current directory")?
+        .join(TEMP_DIR);
     
     if !temp_dir.exists() {
         fs::create_dir_all(&temp_dir).context("Failed to create temp directory")?;
