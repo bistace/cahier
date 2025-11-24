@@ -118,6 +118,7 @@ Cahier creates a configuration file at `~/.cahier/config.json`. You can customiz
 - **`restore_env`**: Whether to persist environment variables (like `export VAR=...`) across sessions.
   - **Default**: `false`
   - **Security Warning**: Enabling this (`true`) will save your environment variables to a local file. Be careful if you work with sensitive secrets (API keys, tokens) in your environment, as they will be written to disk. When disabled, environment variables persist only for the duration of the current session.
+  - Even when set to `false`, the environment will persist across commands of the same session.
 
 ## Technical Architecture
 
@@ -137,7 +138,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 4. Push to the branch (`git push origin feature/AmazingFeature`)
 5. Open a Pull Request
 
-## 📄 License
+## License
 
 This project is licensed under the MIT License.
 
