@@ -4,7 +4,7 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use cahier::{common, config, db, export, repl, tui};
-use common::{DB_FILENAME, DEFAULT_MAX_OUTPUT_SIZE, CAHIER_DIR};
+use common::{CAHIER_DIR, DB_FILENAME, DEFAULT_MAX_OUTPUT_SIZE};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -48,7 +48,8 @@ fn main() -> Result<()> {
         let mut perms = metadata.permissions();
         if perms.mode() & 0o777 != 0o700 {
             perms.set_mode(0o700);
-            std::fs::set_permissions(CAHIER_DIR, perms).context("Failed to set cahier directory permissions")?;
+            std::fs::set_permissions(CAHIER_DIR, perms)
+                .context("Failed to set cahier directory permissions")?;
         }
     }
 
@@ -78,7 +79,8 @@ fn main() -> Result<()> {
             if let Some(cmd) = tui::run(db)? {
                 // User selected a command to edit in REPL
                 // Re-initialize database because tui::run consumed it
-                let db = db::Database::init(DB_FILENAME).context("Failed to re-initialize database")?;
+                let db =
+                    db::Database::init(DB_FILENAME).context("Failed to re-initialize database")?;
                 let pty_writer = setup_signal_handler()?;
                 repl::run_repl(db, DEFAULT_MAX_OUTPUT_SIZE, pty_writer, config, Some(cmd))
             } else {
@@ -97,7 +99,6 @@ fn main() -> Result<()> {
     }
 }
 
-
 type PtyWriter = Arc<Mutex<Option<Box<dyn Write + Send>>>>;
 
 /// Sets up the Ctrl+C signal handler and returns the shared PTY writer
@@ -114,7 +115,8 @@ fn setup_signal_handler() -> Result<PtyWriter> {
             }
             // If no writer, do nothing (at prompt)
         }
-    }).context("Failed to set Ctrl+C handler")?;
+    })
+    .context("Failed to set Ctrl+C handler")?;
 
     Ok(pty_writer)
 }

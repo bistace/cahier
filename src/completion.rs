@@ -1,7 +1,7 @@
-use reedline::{Completer, Suggestion, Span};
+use reedline::{Completer, Span, Suggestion};
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 use std::fs;
+use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 use std::sync::{Arc, Mutex};
 
 #[cfg(unix)]
@@ -60,7 +60,7 @@ impl CahierCompleter {
                 }
             }
         }
-        
+
         let mut cmd_vec: Vec<String> = commands.into_iter().collect();
         cmd_vec.sort();
         cmd_vec
@@ -81,7 +81,7 @@ impl CahierCompleter {
             if let Some(idx) = stripped.find(MAIN_SEPARATOR) {
                 let var = &stripped[..idx];
                 let rest = &stripped[idx..];
-                
+
                 if let Ok(env) = self.env_vars.lock() {
                     if let Some(val) = env.get(var) {
                         return PathBuf::from(val).join(rest.trim_start_matches(MAIN_SEPARATOR));
@@ -101,7 +101,7 @@ impl CahierCompleter {
 impl Completer for CahierCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
         let (start, word) = find_word_at_pos(line, pos);
-        
+
         // Check if we are at command position
         // Logic: if the text before the current word contains no non-whitespace characters, we are at command position.
         // However, we must respect that `start` is the index of the word start.
@@ -144,7 +144,7 @@ impl Completer for CahierCompleter {
 
             // 3. External Commands
             for name in &self.external_commands {
-                 if name.starts_with(word) && !seen.contains(name) {
+                if name.starts_with(word) && !seen.contains(name) {
                     suggestions.push(Suggestion {
                         value: name.clone(),
                         description: Some("Command".to_string()),
@@ -155,7 +155,7 @@ impl Completer for CahierCompleter {
                     seen.insert(name.clone());
                 }
             }
-            
+
             if !suggestions.is_empty() {
                 return suggestions;
             }
@@ -166,7 +166,7 @@ impl Completer for CahierCompleter {
             if let Some(var_prefix) = word.strip_prefix('$') {
                 // Remove the '$'
                 let mut suggestions = Vec::new();
-                
+
                 if let Ok(env) = self.env_vars.lock() {
                     for (key, _value) in env.iter() {
                         if key.starts_with(var_prefix) {
@@ -180,27 +180,31 @@ impl Completer for CahierCompleter {
                         }
                     }
                 }
-                
+
                 return suggestions;
             }
         }
-        
+
         // Otherwise, do file completion
         let path = Path::new(word);
 
-        let filename_offset = word.rfind(|c| c == MAIN_SEPARATOR || c == '/')
+        let filename_offset = word
+            .rfind(|c| c == MAIN_SEPARATOR || c == '/')
             .map(|i| i + 1)
             .unwrap_or(0);
-        
+
         let (dir, file_name) = if word.ends_with(MAIN_SEPARATOR) {
             (path, "")
         } else {
             match path.parent() {
-                Some(parent) if !parent.as_os_str().is_empty() => (parent, path.file_name().and_then(|s| s.to_str()).unwrap_or("")),
+                Some(parent) if !parent.as_os_str().is_empty() => (
+                    parent,
+                    path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
+                ),
                 _ => (Path::new("."), word),
             }
         };
-        
+
         // Expand directory for searching, but keep original `dir` for suggestions
         let search_dir = self.expand_path(dir.to_str().unwrap_or(""));
 
@@ -210,37 +214,40 @@ impl Completer for CahierCompleter {
         };
 
         let mut suggestions = Vec::new();
-        
+
         for entry in read_dir.flatten() {
             let path = entry.path();
             let name = match path.file_name().and_then(|s| s.to_str()) {
                 Some(n) => n,
                 None => continue,
             };
-            
-            if name.starts_with(file_name) {
-                 let mut value = name.to_string();
-                 
-                 let is_dir = path.is_dir();
-                 let append_whitespace;
 
-                 if is_dir {
-                     value.push(MAIN_SEPARATOR);
-                     append_whitespace = false;
-                 } else {
-                     append_whitespace = true;
-                 }
-                 
-                 suggestions.push(Suggestion {
-                     value,
-                     description: None,
-                     extra: None,
-                     span: Span { start: start + filename_offset, end: pos },
-                     append_whitespace,
-                 });
+            if name.starts_with(file_name) {
+                let mut value = name.to_string();
+
+                let is_dir = path.is_dir();
+                let append_whitespace;
+
+                if is_dir {
+                    value.push(MAIN_SEPARATOR);
+                    append_whitespace = false;
+                } else {
+                    append_whitespace = true;
+                }
+
+                suggestions.push(Suggestion {
+                    value,
+                    description: None,
+                    extra: None,
+                    span: Span {
+                        start: start + filename_offset,
+                        end: pos,
+                    },
+                    append_whitespace,
+                });
             }
         }
-        
+
         suggestions
     }
 }
@@ -272,13 +279,13 @@ mod tests {
         let (start, word) = find_word_at_pos(line, pos);
         assert_eq!(start, 3);
         assert_eq!(word, "/tmp/fi");
-        
+
         let line = "cd subdir";
         let pos = 9;
         let (start, word) = find_word_at_pos(line, pos);
         assert_eq!(start, 3);
         assert_eq!(word, "subdir");
-        
+
         let line = "command";
         let pos = 7;
         let (start, word) = find_word_at_pos(line, pos);

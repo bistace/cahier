@@ -1,6 +1,6 @@
-use std::borrow::Cow;
-use reedline::{Prompt, PromptEditMode, PromptHistorySearch};
 use crossterm::style::Stylize;
+use reedline::{Prompt, PromptEditMode, PromptHistorySearch};
+use std::borrow::Cow;
 use std::time::Duration;
 
 #[derive(Clone)]
@@ -17,7 +17,7 @@ impl Default for CahierPrompt {
 
 impl CahierPrompt {
     pub fn new() -> Self {
-        Self { 
+        Self {
             last_success: true,
             last_duration: None,
         }
@@ -55,7 +55,7 @@ impl Prompt for CahierPrompt {
         let hostname = std::fs::read_to_string("/etc/hostname")
             .map(|s| s.trim().to_string())
             .unwrap_or_else(|_| "localhost".to_string());
-            
+
         let cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| ".".to_string());
@@ -67,7 +67,7 @@ impl Prompt for CahierPrompt {
         };
 
         let prompt_str = format!("{}@{}:{}{}\n", username, hostname, cwd, duration_str);
-        
+
         let colored_prompt = if self.last_success {
             prompt_str.blue()
         } else {
@@ -89,12 +89,18 @@ impl Prompt for CahierPrompt {
         Cow::Borrowed(".. ")
     }
 
-    fn render_prompt_history_search_indicator(&self, history_search: PromptHistorySearch) -> Cow<'_, str> {
+    fn render_prompt_history_search_indicator(
+        &self,
+        history_search: PromptHistorySearch,
+    ) -> Cow<'_, str> {
         let prefix = match history_search.status {
             reedline::PromptHistorySearchStatus::Passing => "",
             reedline::PromptHistorySearchStatus::Failing => "failing ",
         };
-        
-        Cow::Owned(format!("({}reverse-search: {}) ", prefix, history_search.term))
+
+        Cow::Owned(format!(
+            "({}reverse-search: {}) ",
+            prefix, history_search.term
+        ))
     }
 }

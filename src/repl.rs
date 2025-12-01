@@ -1,19 +1,22 @@
 use anyhow::Result;
-use reedline::{ColumnarMenu, Emacs, FileBackedHistory, HistoryItem, KeyCode, KeyModifiers, Reedline, ReedlineEvent, ReedlineMenu, Signal};
+use reedline::{
+    ColumnarMenu, Emacs, FileBackedHistory, HistoryItem, KeyCode, KeyModifiers, Reedline,
+    ReedlineEvent, ReedlineMenu, Signal,
+};
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::alias;
-use crate::common::{HISTORY_FILENAME, MAX_HISTORY_ENTRIES, DB_FILENAME};
+use crate::command::{self, CommandContext, CommandResult, Registry};
+use crate::common::{DB_FILENAME, HISTORY_FILENAME, MAX_HISTORY_ENTRIES};
 use crate::completion::CahierCompleter;
 use crate::config::Config;
 use crate::db;
 use crate::executor::{self, Job};
 use crate::highlighter::SyntectHighlighter;
 use crate::prompt::CahierPrompt;
-use crate::command::{self, Registry, CommandContext, CommandResult};
 
 /// Resolves the absolute path to the database
 fn resolve_db_path() -> String {
@@ -33,7 +36,7 @@ fn setup_line_editor(
         FileBackedHistory::with_file(MAX_HISTORY_ENTRIES, HISTORY_FILENAME.into())
             .map_err(|e| anyhow::anyhow!("Error creating history file: {:?}", e))?,
     );
-    
+
     let mut keybindings = reedline::default_emacs_keybindings();
     keybindings.add_binding(
         KeyModifiers::from_bits_truncate(0),
@@ -47,13 +50,15 @@ fn setup_line_editor(
         .with_completer(Box::new(CahierCompleter::new(
             current_env,
             aliases,
-            builtins
+            builtins,
         )))
         .with_quick_completions(true)
-        .with_menu(ReedlineMenu::EngineCompleter(Box::new(ColumnarMenu::default().with_name("completion_menu"))))
+        .with_menu(ReedlineMenu::EngineCompleter(Box::new(
+            ColumnarMenu::default().with_name("completion_menu"),
+        )))
         .with_edit_mode(Box::new(edit_mode))
         .with_highlighter(Box::new(SyntectHighlighter::new(config.theme.clone())));
-        
+
     Ok(line_editor)
 }
 
@@ -61,7 +66,7 @@ fn setup_line_editor(
 fn process_input(input: &str, aliases: &Arc<Mutex<HashMap<String, String>>>) -> (String, bool) {
     // Expand aliases
     let expanded_input_raw = alias::expand_alias(input, aliases);
-    
+
     // Check for nr prefix to skip logging
     let trimmed = expanded_input_raw.trim_start();
     if let Some(stripped) = trimmed.strip_prefix("nr ") {
@@ -88,12 +93,15 @@ fn execute_external_command(
     // Note: If should_log is false (due to 'nr' prefix), we also disable output capture
     // to ensure no persistent record (file or DB) is created.
     let cmd_name = expanded_input.split_whitespace().next().unwrap_or("");
-    let is_ignored = config.ignored_outputs.iter().any(|ignored| ignored == cmd_name);
-    
+    let is_ignored = config
+        .ignored_outputs
+        .iter()
+        .any(|ignored| ignored == cmd_name);
+
     if is_ignored {
         context.should_log = false;
     }
-    
+
     let capture_output = should_log && !is_ignored;
 
     match executor::execute_in_pty(
@@ -102,17 +110,17 @@ fn execute_external_command(
         context.pty_writer,
         context.current_env,
         capture_output,
-        false
+        false,
     ) {
         Ok(res) => {
-             println!(); // Add newline between command output and next prompt
-             
-             // Log the ORIGINAL input
-             if let Err(e) = command::handle_execution_result(res, start, input, context) {
-                 eprintln!("Error processing execution result: {}", e);
-                 context.prompt.set_last_success(false);
-                 context.prompt.set_last_duration(Some(start.elapsed()));
-             }
+            println!(); // Add newline between command output and next prompt
+
+            // Log the ORIGINAL input
+            if let Err(e) = command::handle_execution_result(res, start, input, context) {
+                eprintln!("Error processing execution result: {}", e);
+                context.prompt.set_last_success(false);
+                context.prompt.set_last_duration(Some(start.elapsed()));
+            }
         }
         Err(e) => {
             eprintln!("Execution error: {}", e);
@@ -137,9 +145,9 @@ pub fn run_repl(
     initial_command: Option<String>,
 ) -> Result<()> {
     println!("Cahier started.");
-    
+
     let db_path_str = resolve_db_path();
-    
+
     println!("Database: {}", db_path_str);
     println!("Max output size: {} bytes", max_output_size);
 
@@ -165,14 +173,18 @@ pub fn run_repl(
                             }
                         }
                         Err(e) => {
-                            eprintln!("Warning: Failed to restore working directory ({}): {}", pwd, e);
+                            eprintln!(
+                                "Warning: Failed to restore working directory ({}): {}",
+                                pwd, e
+                            );
                             // Directory doesn't exist, merge persisted vars but update PWD to current dir
                             for (k, v) in persisted_env {
                                 env_map.insert(k, v);
                             }
                             // Update PWD to reflect actual current directory
                             if let Ok(cwd) = std::env::current_dir() {
-                                env_map.insert("PWD".to_string(), cwd.to_string_lossy().to_string());
+                                env_map
+                                    .insert("PWD".to_string(), cwd.to_string_lossy().to_string());
                             }
                         }
                     }
@@ -184,7 +196,7 @@ pub fn run_repl(
                 }
             }
             Err(e) => {
-                 eprintln!("Failed to load persisted environment: {}", e);
+                eprintln!("Failed to load persisted environment: {}", e);
             }
         }
     } else {
@@ -194,8 +206,7 @@ pub fn run_repl(
         }
     }
 
-    let current_env: Arc<Mutex<HashMap<String, String>>> = 
-        Arc::new(Mutex::new(env_map));
+    let current_env: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(env_map));
 
     let mut registry = Registry::new();
     registry.register(Box::new(command::CdCommand));
@@ -219,28 +230,26 @@ pub fn run_repl(
 
     let builtins = registry.command_names();
 
-    let mut line_editor = setup_line_editor(
-        &config,
-        current_env.clone(),
-        aliases.clone(),
-        builtins
-    )?;
-    
+    let mut line_editor =
+        setup_line_editor(&config, current_env.clone(), aliases.clone(), builtins)?;
+
     let mut prompt = CahierPrompt::new();
 
     let mut jobs: Vec<Job> = Vec::new();
-    
+
     // Add initial command to history if provided
     if let Some(cmd) = initial_command {
-        let _ = line_editor.history_mut().save(HistoryItem::from_command_line(&cmd));
+        let _ = line_editor
+            .history_mut()
+            .save(HistoryItem::from_command_line(&cmd));
         // Also sync history to disk to ensure it persists
         let _ = line_editor.sync_history();
         // Try to run edit commands
         line_editor.run_edit_commands(&[reedline::EditCommand::InsertString(cmd)]);
     }
-    
+
     let mut next_command: Option<String> = None;
-    
+
     loop {
         let sig = line_editor.read_line(&prompt);
         match sig {
@@ -253,11 +262,11 @@ pub fn run_repl(
                 let start_total = Instant::now();
 
                 let (expanded_input, should_log) = process_input(input, &aliases);
-                
+
                 // Check for built-in commands
                 let args_owned = shlex::split(&expanded_input).unwrap_or_default();
                 let args: Vec<&str> = args_owned.iter().map(|s| s.as_str()).collect();
-                
+
                 let mut context = CommandContext {
                     db: &db,
                     current_env: &current_env,
@@ -278,16 +287,22 @@ pub fn run_repl(
                             Ok(CommandResult::Continue) => {
                                 if config.restore_env {
                                     if let Ok(env) = context.current_env.lock() {
-                                        if let Err(e) = crate::env_store::save_env(&env, &env_store_path) {
+                                        if let Err(e) =
+                                            crate::env_store::save_env(&env, &env_store_path)
+                                        {
                                             eprintln!("Failed to save environment: {}", e);
                                         }
                                     }
                                 }
 
                                 if let Some(cmd) = next_command.take() {
-                                    let _ = line_editor.history_mut().save(HistoryItem::from_command_line(&cmd));
+                                    let _ = line_editor
+                                        .history_mut()
+                                        .save(HistoryItem::from_command_line(&cmd));
                                     let _ = line_editor.sync_history();
-                                    line_editor.run_edit_commands(&[reedline::EditCommand::InsertString(cmd)]);
+                                    line_editor.run_edit_commands(&[
+                                        reedline::EditCommand::InsertString(cmd),
+                                    ]);
                                 }
                                 println!();
                                 continue;
@@ -302,13 +317,19 @@ pub fn run_repl(
                     }
                 }
 
-                execute_external_command(input, &expanded_input, should_log, &mut context, &config)?;
-                
+                execute_external_command(
+                    input,
+                    &expanded_input,
+                    should_log,
+                    &mut context,
+                    &config,
+                )?;
+
                 if config.restore_env {
                     if let Ok(env) = context.current_env.lock() {
-                         if let Err(e) = crate::env_store::save_env(&env, &env_store_path) {
-                              eprintln!("Failed to save environment: {}", e);
-                         }
+                        if let Err(e) = crate::env_store::save_env(&env, &env_store_path) {
+                            eprintln!("Failed to save environment: {}", e);
+                        }
                     }
                 }
             }
@@ -331,8 +352,10 @@ pub fn run_repl(
 
         // Handle pending command from edit
         if let Some(cmd) = next_command.take() {
-            let _ = line_editor.history_mut().save(HistoryItem::from_command_line(&cmd));
-             // Also sync history to disk to ensure it persists
+            let _ = line_editor
+                .history_mut()
+                .save(HistoryItem::from_command_line(&cmd));
+            // Also sync history to disk to ensure it persists
             let _ = line_editor.sync_history();
             // Inject the command into the next prompt
             line_editor.run_edit_commands(&[reedline::EditCommand::InsertString(cmd)]);
