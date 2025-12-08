@@ -1,8 +1,8 @@
 # Cahier
 
-**Cahier** (French for "notebook") is a powerful terminal session recorder and manager written in Rust. It wraps your shell interactions, recording not just the commands you run, but their output, exit codes, execution duration, and more into a structured SQLite database.
+**Cahier** (French for "notebook") is a terminal session recorder and manager written in Rust. It wraps your shell interactions, recording not just the commands you run, but their output, exit codes, execution duration, and more into a structured SQLite database.
 
-Unlike standard shell history which only saves command strings, Cahier preserves the full context of your work, allowing you to generate accurate Markdown reports of your terminal sessions, which is perfect for documenting tutorials, debugging sessions, or keeping a lab notebook of your computational work.
+Unlike standard shell history which only saves command strings, Cahier preserves the full context of your work, allowing you to generate accurate Markdown reports of your terminal sessions.
 
 ## Features
 
