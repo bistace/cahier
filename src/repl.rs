@@ -1,7 +1,7 @@
 use anyhow::Result;
 use reedline::{
-    ColumnarMenu, Emacs, FileBackedHistory, HistoryItem, KeyCode, KeyModifiers, Reedline,
-    ReedlineEvent, ReedlineMenu, Signal,
+    ColumnarMenu, CommandLineSearch, Emacs, FileBackedHistory, HistoryItem, KeyCode, KeyModifiers,
+    Reedline, ReedlineEvent, ReedlineMenu, SearchFilter, Signal,
 };
 use std::collections::HashMap;
 use std::io::Write;
@@ -237,6 +237,10 @@ pub fn run_repl(
 
     let mut jobs: Vec<Job> = Vec::new();
 
+    // Track nr commands to remove from history before exit
+    // These should stay in memory for the session but not be persisted
+    let mut nr_commands: Vec<String> = Vec::new();
+
     // Add initial command to history if provided
     if let Some(cmd) = initial_command {
         let _ = line_editor
@@ -262,6 +266,11 @@ pub fn run_repl(
                 let start_total = Instant::now();
 
                 let (expanded_input, should_log) = process_input(input, &aliases);
+
+                // Track nr commands for cleanup before exit
+                if !should_log {
+                    nr_commands.push(input.to_string());
+                }
 
                 // Check for built-in commands
                 let args_owned = shlex::split(&expanded_input).unwrap_or_default();
@@ -361,5 +370,24 @@ pub fn run_repl(
             line_editor.run_edit_commands(&[reedline::EditCommand::InsertString(cmd)]);
         }
     }
+
+    // Clean up nr commands from history before exit
+    // These were kept in memory for session history but should not persist
+    for cmd in &nr_commands {
+        let filter = SearchFilter::from_text_search(CommandLineSearch::Exact(cmd.clone()), None);
+        if let Ok(results) = line_editor
+            .history()
+            .search(reedline::SearchQuery::last_with_search(filter))
+        {
+            if let Some(item) = results.first() {
+                if let Some(id) = item.id {
+                    let _ = line_editor.history_mut().delete(id);
+                }
+            }
+        }
+    }
+    // Sync the cleaned history to disk
+    let _ = line_editor.sync_history();
+
     Ok(())
 }
