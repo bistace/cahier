@@ -1,7 +1,7 @@
 use anyhow::Result;
 use reedline::{
-    ColumnarMenu, CommandLineSearch, Emacs, FileBackedHistory, HistoryItem, KeyCode, KeyModifiers,
-    Reedline, ReedlineEvent, ReedlineMenu, SearchFilter, Signal,
+    ColumnarMenu, Emacs, FileBackedHistory, History, HistoryItem, KeyCode, KeyModifiers, Reedline,
+    ReedlineEvent, ReedlineMenu, SearchDirection, SearchQuery, Signal,
 };
 use std::collections::HashMap;
 use std::io::Write;
@@ -31,11 +31,17 @@ fn setup_line_editor(
     current_env: Arc<Mutex<HashMap<String, String>>>,
     aliases: Arc<Mutex<HashMap<String, String>>>,
     builtins: Vec<String>,
-) -> Result<Reedline> {
-    let history = Box::new(
+) -> Result<(Reedline, FileBackedHistory)> {
+    let disk_history =
         FileBackedHistory::with_file(MAX_HISTORY_ENTRIES, common::history_path())
-            .map_err(|e| anyhow::anyhow!("Error creating history file: {:?}", e))?,
-    );
+            .map_err(|e| anyhow::anyhow!("Error creating history file: {:?}", e))?;
+    let mut session_history = FileBackedHistory::new(MAX_HISTORY_ENTRIES);
+    let entries = disk_history
+        .search(SearchQuery::everything(SearchDirection::Forward, None))
+        .map_err(|e| anyhow::anyhow!("Error loading history file: {:?}", e))?;
+    for entry in entries {
+        let _ = session_history.save(entry);
+    }
 
     let mut keybindings = reedline::default_emacs_keybindings();
     keybindings.add_binding(
@@ -46,7 +52,7 @@ fn setup_line_editor(
     let edit_mode = Emacs::new(keybindings);
 
     let line_editor = Reedline::create()
-        .with_history(history)
+        .with_history(Box::new(session_history))
         .with_completer(Box::new(CahierCompleter::new(
             current_env,
             aliases,
@@ -59,7 +65,7 @@ fn setup_line_editor(
         .with_edit_mode(Box::new(edit_mode))
         .with_highlighter(Box::new(SyntectHighlighter::new(config.theme.clone())));
 
-    Ok(line_editor)
+    Ok((line_editor, disk_history))
 }
 
 /// Processes the input string to handle aliases and the 'nr' prefix
@@ -228,24 +234,24 @@ pub fn run_repl(
 
     let builtins = registry.command_names();
 
-    let mut line_editor =
+    let (mut line_editor, mut disk_history) =
         setup_line_editor(&config, current_env.clone(), aliases.clone(), builtins)?;
 
     let mut prompt = CahierPrompt::new();
 
     let mut jobs: Vec<Job> = Vec::new();
 
-    // Track nr commands to remove from history before exit
-    // These should stay in memory for the session but not be persisted
-    let mut nr_commands: Vec<String> = Vec::new();
-
     // Add initial command to history if provided
     if let Some(cmd) = initial_command {
         let _ = line_editor
             .history_mut()
             .save(HistoryItem::from_command_line(&cmd));
+        let (_, should_log) = process_input(&cmd, &aliases);
+        if should_log {
+            let _ = disk_history.save(HistoryItem::from_command_line(&cmd));
+        }
         // Also sync history to disk to ensure it persists
-        let _ = line_editor.sync_history();
+        let _ = disk_history.sync();
         // Try to run edit commands
         line_editor.run_edit_commands(&[reedline::EditCommand::InsertString(cmd)]);
     }
@@ -265,9 +271,8 @@ pub fn run_repl(
 
                 let (expanded_input, should_log) = process_input(input, &aliases);
 
-                // Track nr commands for cleanup before exit
-                if !should_log {
-                    nr_commands.push(input.to_string());
+                if should_log {
+                    let _ = disk_history.save(HistoryItem::from_command_line(input));
                 }
 
                 // Check for built-in commands
@@ -306,7 +311,12 @@ pub fn run_repl(
                                     let _ = line_editor
                                         .history_mut()
                                         .save(HistoryItem::from_command_line(&cmd));
-                                    let _ = line_editor.sync_history();
+                                    let (_, should_log) = process_input(&cmd, &aliases);
+                                    if should_log {
+                                        let _ =
+                                            disk_history.save(HistoryItem::from_command_line(&cmd));
+                                    }
+                                    let _ = disk_history.sync();
                                     line_editor.run_edit_commands(&[
                                         reedline::EditCommand::InsertString(cmd),
                                     ]);
@@ -362,30 +372,64 @@ pub fn run_repl(
             let _ = line_editor
                 .history_mut()
                 .save(HistoryItem::from_command_line(&cmd));
+            let (_, should_log) = process_input(&cmd, &aliases);
+            if should_log {
+                let _ = disk_history.save(HistoryItem::from_command_line(&cmd));
+            }
             // Also sync history to disk to ensure it persists
-            let _ = line_editor.sync_history();
+            let _ = disk_history.sync();
             // Inject the command into the next prompt
             line_editor.run_edit_commands(&[reedline::EditCommand::InsertString(cmd)]);
         }
     }
 
-    // Clean up nr commands from history before exit
-    // These were kept in memory for session history but should not persist
-    for cmd in &nr_commands {
-        let filter = SearchFilter::from_text_search(CommandLineSearch::Exact(cmd.clone()), None);
-        if let Ok(results) = line_editor
-            .history()
-            .search(reedline::SearchQuery::last_with_search(filter))
-        {
-            if let Some(item) = results.first() {
-                if let Some(id) = item.id {
-                    let _ = line_editor.history_mut().delete(id);
-                }
-            }
-        }
-    }
-    // Sync the cleaned history to disk
-    let _ = line_editor.sync_history();
+    // Sync the persisted history to disk
+    let _ = disk_history.sync();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reedline::History;
+    use tempfile::tempdir;
+
+    #[test]
+    fn nr_commands_stay_in_memory_only() -> Result<()> {
+        let temp = tempdir()?;
+        let history_path = temp.path().join("cahier_history.txt");
+
+        let mut disk_history =
+            FileBackedHistory::with_file(MAX_HISTORY_ENTRIES, history_path.clone())?;
+        let mut session_history = FileBackedHistory::new(MAX_HISTORY_ENTRIES);
+
+        let aliases = Arc::new(Mutex::new(HashMap::new()));
+        let commands = ["echo one", "nr echo secret", "echo two"];
+
+        for &cmd in &commands {
+            let _ = session_history.save(HistoryItem::from_command_line(cmd));
+            let (_, should_log) = process_input(cmd, &aliases);
+            if should_log {
+                let _ = disk_history.save(HistoryItem::from_command_line(cmd));
+            }
+        }
+
+        disk_history.sync()?;
+
+        let on_disk = std::fs::read_to_string(&history_path)?;
+        assert!(on_disk.contains("echo one"));
+        assert!(on_disk.contains("echo two"));
+        assert!(!on_disk.contains("nr echo secret"));
+
+        let session_entries = session_history
+            .search(SearchQuery::everything(SearchDirection::Forward, None))?;
+        let session_commands: Vec<String> = session_entries
+            .into_iter()
+            .map(|entry| entry.command_line)
+            .collect();
+        assert!(session_commands.contains(&"nr echo secret".to_string()));
+
+        Ok(())
+    }
 }
