@@ -4,7 +4,7 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use cahier::{common, config, db, export, repl, tui};
-use common::{CAHIER_DIR, DB_FILENAME, DEFAULT_MAX_OUTPUT_SIZE};
+use common::DEFAULT_MAX_OUTPUT_SIZE;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -36,25 +36,29 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    common::init_base_dir();
+
     // Ensure cahier directory exists
-    if !std::path::Path::new(CAHIER_DIR).exists() {
-        std::fs::create_dir_all(CAHIER_DIR).context("Failed to create cahier directory")?;
+    let cahier_dir = common::cahier_dir();
+    if !cahier_dir.exists() {
+        std::fs::create_dir_all(&cahier_dir).context("Failed to create cahier directory")?;
     }
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let metadata = std::fs::metadata(CAHIER_DIR)?;
+        let metadata = std::fs::metadata(&cahier_dir)?;
         let mut perms = metadata.permissions();
         if perms.mode() & 0o777 != 0o700 {
             perms.set_mode(0o700);
-            std::fs::set_permissions(CAHIER_DIR, perms)
+            std::fs::set_permissions(&cahier_dir, perms)
                 .context("Failed to set cahier directory permissions")?;
         }
     }
 
     let args = Args::parse();
-    let db = db::Database::init(DB_FILENAME).context("Failed to initialize database")?;
+    let db_path = common::db_path();
+    let db = db::Database::init(&db_path).context("Failed to initialize database")?;
     let config = config::Config::load().context("Failed to load configuration")?;
 
     match args.command {
@@ -80,7 +84,7 @@ fn main() -> Result<()> {
                 // User selected a command to edit in REPL
                 // Re-initialize database because tui::run consumed it
                 let db =
-                    db::Database::init(DB_FILENAME).context("Failed to re-initialize database")?;
+                    db::Database::init(&db_path).context("Failed to re-initialize database")?;
                 let pty_writer = setup_signal_handler()?;
                 repl::run_repl(db, DEFAULT_MAX_OUTPUT_SIZE, pty_writer, config, Some(cmd))
             } else {

@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
+use std::path::Path;
 
 pub struct Database {
     conn: Connection,
@@ -37,7 +38,7 @@ pub enum Direction {
 }
 
 impl Database {
-    pub fn init(path: &str) -> Result<Self> {
+    pub fn init<P: AsRef<Path>>(path: P) -> Result<Self> {
         let conn = Connection::open(path).context("Failed to open database")?;
         Self::setup_schema(&conn).context("Failed to setup schema")?;
         Ok(Self { conn })

@@ -17,7 +17,7 @@ use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 #[cfg(unix)]
 use nix::unistd::Pid;
 
-use crate::common::{OUTPUT_DIR, TEMP_DIR};
+use crate::common;
 
 /// RAII guard that ensures raw mode is disabled when dropped
 struct RawModeGuard {
@@ -107,9 +107,7 @@ impl Drop for EnvDumpGuard {
 
 fn create_secure_temp_file() -> Result<PathBuf> {
     // Resolve to absolute path to ensure it works even if the child process changes directory
-    let temp_dir = std::env::current_dir()
-        .context("Failed to get current directory")?
-        .join(TEMP_DIR);
+    let temp_dir = common::temp_dir();
 
     if !temp_dir.exists() {
         fs::create_dir_all(&temp_dir).context("Failed to create temp directory")?;
@@ -201,7 +199,7 @@ impl OutputHandler {
             && self.captured_output.len() + data.len() > self.max_output_size
             && self.output_file.is_none()
         {
-            let output_dir = PathBuf::from(OUTPUT_DIR);
+            let output_dir = common::output_dir();
             if !output_dir.exists() {
                 let _ = std::fs::create_dir_all(&output_dir);
 
@@ -237,7 +235,7 @@ impl OutputHandler {
 
             if let Ok(mut file) = file_res {
                 let _ = file.write_all(&self.captured_output);
-                self.output_filename = Some(format!("{}/{}", OUTPUT_DIR, filename));
+                self.output_filename = Some(filepath.to_string_lossy().to_string());
                 self.output_file = Some(file);
             }
 
@@ -805,7 +803,7 @@ mod tests {
         let pty_writer = Arc::new(Mutex::new(None));
         let env = Arc::new(Mutex::new(std::env::vars().collect()));
         // We must ensure CAHIER_DIR exists for tests if we use create_secure_temp_file
-        let _ = std::fs::create_dir_all("cahier_logs/tmp");
+        let _ = std::fs::create_dir_all(crate::common::temp_dir());
 
         let result = execute_in_pty("echo 'hello world'", 1024, &pty_writer, &env, true, true)
             .expect("failed to execute");
@@ -828,7 +826,7 @@ mod tests {
     fn test_execute_failure() {
         let pty_writer = Arc::new(Mutex::new(None));
         let env = Arc::new(Mutex::new(std::env::vars().collect()));
-        let _ = std::fs::create_dir_all("cahier_logs/tmp");
+        let _ = std::fs::create_dir_all(crate::common::temp_dir());
         let result = execute_in_pty(
             "nonexistent_command_123",
             1024,

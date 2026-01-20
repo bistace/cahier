@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use crate::alias;
 use crate::command::{self, CommandContext, CommandResult, Registry};
-use crate::common::{DB_FILENAME, HISTORY_FILENAME, MAX_HISTORY_ENTRIES};
+use crate::common::{self, MAX_HISTORY_ENTRIES};
 use crate::completion::CahierCompleter;
 use crate::config::Config;
 use crate::db;
@@ -20,8 +20,8 @@ use crate::prompt::CahierPrompt;
 
 /// Resolves the absolute path to the database
 fn resolve_db_path() -> String {
-    let db_path_buf = std::fs::canonicalize(DB_FILENAME)
-        .unwrap_or_else(|_| std::path::PathBuf::from(DB_FILENAME));
+    let db_path = common::db_path();
+    let db_path_buf = std::fs::canonicalize(&db_path).unwrap_or(db_path);
     db_path_buf.to_string_lossy().to_string()
 }
 
@@ -33,7 +33,7 @@ fn setup_line_editor(
     builtins: Vec<String>,
 ) -> Result<Reedline> {
     let history = Box::new(
-        FileBackedHistory::with_file(MAX_HISTORY_ENTRIES, HISTORY_FILENAME.into())
+        FileBackedHistory::with_file(MAX_HISTORY_ENTRIES, common::history_path())
             .map_err(|e| anyhow::anyhow!("Error creating history file: {:?}", e))?,
     );
 
@@ -152,9 +152,7 @@ pub fn run_repl(
     println!("Max output size: {} bytes", max_output_size);
 
     // Resolve absolute path for environment store
-    let env_store_path = std::env::current_dir()
-        .map(|cwd| cwd.join(crate::common::ENV_STORE_FILENAME))
-        .unwrap_or_else(|_| std::path::PathBuf::from(crate::common::ENV_STORE_FILENAME));
+    let env_store_path = common::env_store_path();
 
     // Initialize current environment
     let mut env_map: HashMap<String, String> = std::env::vars().collect();
