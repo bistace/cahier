@@ -52,6 +52,7 @@ fn setup_line_editor(
     let edit_mode = Emacs::new(keybindings);
 
     let line_editor = Reedline::create()
+        .use_bracketed_paste(true)
         .with_history(Box::new(session_history))
         .with_completer(Box::new(CahierCompleter::new(
             current_env,
