@@ -183,7 +183,11 @@ impl<'a> App<'a> {
     fn update_output_cache(&mut self) {
         if let Some(i) = self.list_state.selected() {
             if let Some(entry) = self.entries.get(i) {
-                self.current_output_cache = self.db.get_entry_output(entry.id).ok();
+                self.current_output_cache = self
+                    .db
+                    .get_entry_output(entry.id)
+                    .ok()
+                    .map(|s| process_carriage_returns(&s));
             } else {
                 self.current_output_cache = None;
             }
@@ -635,4 +639,24 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup_layout[1])[1]
+}
+
+/// Process carriage returns (`\r`) the way a terminal would: text after `\r`
+/// overwrites from the beginning of the line. This collapses progress bar
+/// output (e.g. wget, curl) into the final state of each line.
+fn process_carriage_returns(input: &str) -> String {
+    input
+        .lines()
+        .map(|line| {
+            if !line.contains('\r') {
+                return line.to_string();
+            }
+            // Keep only the last \r-separated segment for the line
+            line.rsplit('\r')
+                .find(|s| !s.is_empty())
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
