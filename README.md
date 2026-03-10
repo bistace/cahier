@@ -1,36 +1,44 @@
 # Cahier
 
-**Cahier** (French for "notebook") is a terminal session recorder and manager written in Rust. It wraps your shell interactions, recording not just the commands you run, but their output, exit codes, execution duration, and more into a structured SQLite database.
+**Cahier** is a terminal session recorder and notebook written in Rust.
 
-Unlike standard shell history which only saves command strings, Cahier preserves the full context of your work, allowing you to generate accurate Markdown reports of your terminal sessions.
+It runs your commands through your shell inside a PTY, captures command output, exit status, and execution time, and stores the session in a structured SQLite database. The result is a project-local notebook you can browse in a TUI and export to Markdown.
+
+## Why Cahier
+
+Standard shell history records command lines. Cahier records the working session around them:
+
+- command text
+- stdout and stderr
+- exit codes
+- execution duration
+- annotations
+- ordering and separators
+- reusable snippets
+
+This makes it useful for keeping development notes, reconstructing terminal sessions, and exporting clean project logs.
 
 ## Features
 
-- **Full Session Recording**: Captures standard output (stdout/stderr), exit codes, and timing for every command.
-- **Structured Storage**: Uses a local SQLite database for reliable, queryable storage.
-- **Markdown Export**: Generate Markdown logs of your session with a single command.
-- **Command Snippets**: Promote useful commands into reusable project or global snippets, then send them back to the REPL from the editor.
-- **Smart Output Handling**:
-  - Automatically redirects excessive output to external files to keep the database clean.
-  - Configurable "ignore list" for interactive tools (vim, nano, htop, ssh, ...) to prevent capturing garbage output.
-- **Privacy Control**: Prefix any command with `nr` (no-record) to execute it without logging (e.g., `nr echo secret`).
-- **Modern REPL Experience**: Built on `reedline`, offering syntax highlighting and file/command autocompletion.
-- **Alias Support**: Automatically loads aliases from your shell configuration.
-- **Security**: Stores all logs and outputs in strict local directories (`0700`/`0600` permissions on Unix) to protect your session data from other users.
+- Records shell commands with output, exit status, and duration.
+- Stores session data in SQLite.
+- Exports history as Markdown or plain command lists.
+- Opens an interactive TUI to review, reorder, annotate, and delete entries.
+- Supports project and global snippets.
+- Redirects oversized command output to external files instead of bloating the database.
+- Lets you skip persistence for a command with the `nr` prefix.
+- Can import aliases from your interactive shell at startup.
+- Uses restrictive Unix permissions for sensitive local files where supported.
 
 ## Installation
 
-### From Crates.io
-
-The easiest way to install Cahier is via Cargo:
+### From crates.io
 
 ```bash
 cargo install cahier
 ```
 
-### From Source
-
-Ensure you have Rust and Cargo installed.
+### From source
 
 ```bash
 git clone https://github.com/bistace/cahier.git
@@ -38,94 +46,196 @@ cd cahier
 cargo install --path .
 ```
 
-Or build manually:
+### Build a local binary
 
 ```bash
 cargo build --release
 cp target/release/cahier /usr/local/bin/
 ```
 
-## Usage
+## Quick Start
 
-### Starting a Session
-
-Simply run `cahier` to start the REPL wrapper. It acts like a normal shell.
+Start Cahier in the project you want to track:
 
 ```bash
 cahier
 ```
 
-You can specify a maximum output capture size (in bytes) before it offloads to a file (default is 16KB):
+On first use, Cahier creates a project-local notebook under `./cahier_logs/`:
 
-```bash
-cahier start --max-output-size 1048576  # 1MB limit
+```text
+cahier_logs/
+|-- cahier.db
+|-- cahier_history.txt
+|-- outputs/
+`-- env_state.json   # only used when restore_env is enabled
 ```
 
-### Commands
-
-Inside Cahier, use your shell commands as usual.
-
-- **Prevent Logging**: Use the `nr` prefix to skip recording a specific command.
-  ```bash
-  nr export API_KEY="12345"
-  ```
-  Using `nr` prevents the command from being saved to the database **and** ensures its output is not captured or saved to any file.
-
-### Exporting History
-
-Export your recorded history to a Markdown file. This is useful for creating documentation or sharing logs.
+Run commands as usual inside the REPL. Later, export the notebook:
 
 ```bash
-# Print Markdown to stdout
+cahier export --output session.md
+```
+
+## Usage
+
+### Start the REPL
+
+`cahier` starts the REPL wrapper with the default output capture limit of 16384 bytes.
+
+```bash
+cahier
+```
+
+You can also start it explicitly and change the output threshold:
+
+```bash
+cahier start --max-output-size 1048576
+```
+
+Commands are executed through your current shell from `$SHELL` using `-c`, inside a pseudo-terminal. Cahier also provides built-ins for stateful shell-like behavior where needed.
+
+### Built-in commands
+
+The REPL supports these built-ins:
+
+- `cd`
+- `jobs`
+- `fg`
+- `alias`
+- `unalias`
+- `edit`
+- `exit`
+
+All other commands are executed through your shell.
+
+### Skip recording for a command
+
+Prefix a command with `nr` to execute it without storing it in the notebook or writing captured output to disk:
+
+```bash
+nr export API_KEY="12345"
+nr echo "temporary secret"
+```
+
+### Export history
+
+Export the recorded notebook as Markdown:
+
+```bash
 cahier export
+```
 
-# Save to a file
+Write the export to a file:
+
+```bash
 cahier export --output session_log.md
+```
 
-# Export only the commands (plain text)
+Export only the command lines:
+
+```bash
 cahier export --only-commands
 ```
 
-### Interactive History Editor
+Markdown export includes:
 
-Manage and browse your session history with an interactive TUI editor.
+- optional annotations
+- a status line in the form `(exit_code - duration_ms)`
+- the command prefixed with `$`
+- captured output, or a reference to an external output file
 
-**Launching:**
-- From command line: `cahier edit`
-- Inside REPL: `edit`
+### Interactive editor
 
-**Key Bindings:**
-- **Navigation**: `j` / `k` or `Up` / `Down`
-- **View Output**: `Enter` (toggle fullscreen)
-- **Management**:
-  - `d`: Delete entry
-  - `a`: Annotate entry
-  - `b`: Save selected command as a snippet
-  - `J` / `K`: Move entry up/down
-- **Snippets**:
-  - `S`: Open the snippet browser
-  - In the snippet browser, `s` sends the selected snippet back to the REPL
-- **Execution**: `s` to send command to REPL
-- **Quit**: `q`
+Open the TUI from the command line:
 
-When creating a snippet, Cahier opens a popup in the editor where you can set:
+```bash
+cahier edit
+```
+
+Or from inside the REPL:
+
+```bash
+edit
+```
+
+History view key bindings:
+
+- `j` / `Down`: next entry
+- `k` / `Up`: previous entry
+- `Enter`: toggle fullscreen output view
+- `p`: collapse or expand the preview pane
+- `a`: annotate entry
+- `b`: save selected command as a snippet
+- `d`: delete entry
+- `J`: move entry down
+- `K`: move entry up
+- `Space`: insert a separator
+- `s`: send selected command back to the REPL
+- `S`: open the snippet browser
+- `q`: quit
+
+Snippet browser key bindings:
+
+- `j` / `Down`: next snippet
+- `k` / `Up`: previous snippet
+- `s`: send selected snippet back to the REPL
+- `d`: delete snippet
+- `q`: return to history view
+
+When creating a snippet, Cahier lets you set:
+
 - `name`
 - `description`
 - `scope` (`project` or `global`)
 - `tags`
 
-`project` snippets are stored with the current Cahier notebook. `global` snippets are stored in a shared Cahier database under your home directory and can be reused from other projects.
+Project snippets are stored in the current notebook database. Global snippets are stored in `~/.cahier/snippets.db`.
+
+## Storage Model
+
+Cahier uses two storage scopes:
+
+- Project-local data in `./cahier_logs/`
+  - session database
+  - REPL history file
+  - redirected output files
+  - optional persisted environment state
+- User-level data in `~/.cahier/`
+  - `config.json`
+  - `snippets.db` for global snippets
+
+This split keeps notebooks tied to the current project while allowing shared configuration and reusable snippets.
 
 ## Configuration
 
-Cahier creates a configuration file at `~/.cahier/config.json`. You can customize the behavior by editing this file.
+Cahier loads configuration from `~/.cahier/config.json`. If the file does not exist, Cahier creates it automatically.
 
-**Default Configuration:**
+Default configuration:
 
 ```json
 {
   "ignored_outputs": [
-    "nano", "vim", "nvim", "htop", "ssh", "less", "man", "tmux"
+    "nano",
+    "vim",
+    "vi",
+    "emacs",
+    "hx",
+    "atom",
+    "gedit",
+    "geany",
+    "kate",
+    "kwrite",
+    "nvim",
+    "htop",
+    "top",
+    "atop",
+    "less",
+    "more",
+    "man",
+    "ssh",
+    "tmux",
+    "screen"
   ],
   "theme": "Solarized (dark)",
   "load_aliases": true,
@@ -133,32 +243,48 @@ Cahier creates a configuration file at `~/.cahier/config.json`. You can customiz
 }
 ```
 
-- **`ignored_outputs`**: A list of command names that should not be captured (e.g., text editors, interactive TUI tools).
-- **`theme`**: Syntax highlighting theme (e.g., "Solarized (dark)", "Solarized (light)", "InspiredGitHub").
-- **`load_aliases`**: Whether to import aliases from your parent shell (bash/zsh/etc).
-- **`restore_env`**: Whether to persist environment variables (like `export VAR=...`) across sessions.
-  - **Default**: `false`
-  - **Security Warning**: Enabling this (`true`) will save your environment variables to a local file. Be careful if you work with sensitive secrets (API keys, tokens) in your environment, as they will be written to disk. When disabled, environment variables persist only for the duration of the current session.
-  - Even when set to `false`, the environment will persist across commands of the same session.
+Configuration fields:
 
-## Technical Architecture
+- `ignored_outputs`: commands whose output should not be captured and whose executions should not be persisted to the notebook.
+- `theme`: syntax highlighting theme used by the REPL highlighter.
+- `load_aliases`: whether Cahier should load aliases from your interactive shell at startup.
+- `restore_env`: whether Cahier should persist environment state between sessions.
 
-Cahier combines several powerful Rust crates to provide a seamless experience:
+### `restore_env` behavior
 
-- **[Reedline](https://github.com/nushell/reedline)**: Provides the line editor, history, syntax highlighting, and completion engine.
-- **[Portable PTY](https://github.com/wez/wezterm/tree/main/pty)**: Creates a pseudo-terminal to execute commands accurately, preserving color codes and formatting.
-- **[Rusqlite](https://github.com/rusqlite/rusqlite)**: Interfaces with the SQLite database for robust data persistence.
+When `restore_env` is enabled, Cahier stores environment variables to `./cahier_logs/env_state.json` and attempts to restore them, including `PWD`, on the next start.
 
-## Contributing
+When it is disabled, environment changes still persist for the lifetime of the current Cahier session, but they are not written for reuse in later sessions.
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+## Security and Privacy
 
-1. Fork the project
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+- `nr ...` executes a command without logging it to the database.
+- Oversized output is redirected to a file under `./cahier_logs/outputs/` when capture is enabled.
+- Commands listed in `ignored_outputs` are executed without output capture and are not persisted to the notebook.
+- On Unix, Cahier uses restrictive permissions for sensitive files and directories where it creates them:
+  - notebook directories and output directories: `0700`
+  - config, env-state, and redirected output files: `0600`
+
+If you enable `restore_env`, be aware that environment values may be written to disk. Do not enable it casually on machines or workflows that handle sensitive secrets.
+
+## Technical Notes
+
+Cahier is built with:
+
+- [`clap`](https://github.com/clap-rs/clap) for the CLI
+- [`portable-pty`](https://github.com/wez/wezterm/tree/main/pty) for PTY-backed command execution
+- [`reedline`](https://github.com/nushell/reedline) for the REPL editor, completion, and history integration
+- [`ratatui`](https://github.com/ratatui/ratatui) for the interactive TUI
+- [`rusqlite`](https://github.com/rusqlite/rusqlite) for SQLite persistence
+
+## Development
+
+Run the test suite with:
+
+```bash
+cargo test
+```
 
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
