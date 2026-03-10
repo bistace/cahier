@@ -37,8 +37,46 @@ pub enum Direction {
     Down,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnippetScope {
+    Project,
+    Global,
+}
+
+impl SnippetScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::Global => "global",
+        }
+    }
+}
+
+impl std::fmt::Display for SnippetScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Snippet {
+    pub id: i64,
+    pub name: String,
+    pub command: String,
+    pub description: Option<String>,
+    pub scope: SnippetScope,
+    pub tags: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 impl Database {
     pub fn init<P: AsRef<Path>>(path: P) -> Result<Self> {
+        if let Some(parent) = path.as_ref().parent() {
+            if !parent.exists() {
+                std::fs::create_dir_all(parent).context("Failed to create database directory")?;
+            }
+        }
         let conn = Connection::open(path).context("Failed to open database")?;
         Self::setup_schema(&conn).context("Failed to setup schema")?;
         Ok(Self { conn })
@@ -66,6 +104,21 @@ impl Database {
             [],
         )
         .context("Failed to create entries table")?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS snippets (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                command TEXT NOT NULL,
+                description TEXT,
+                scope TEXT NOT NULL CHECK(scope IN ('project', 'global')),
+                tags TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )
+        .context("Failed to create snippets table")?;
 
         // Migrate existing table if output_file column doesn't exist
         let column_exists: Result<i32, _> = conn.query_row(
@@ -117,6 +170,121 @@ impl Database {
         let _ = conn.execute("ALTER TABLE entries DROP COLUMN timestamp", []);
 
         Ok(())
+    }
+
+    pub fn create_snippet(
+        &self,
+        name: &str,
+        command: &str,
+        description: Option<&str>,
+        scope: SnippetScope,
+        tags: Option<&str>,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn
+            .execute(
+                "INSERT INTO snippets (name, command, description, scope, tags, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                params![name, command, description, scope.as_str(), tags, now],
+            )
+            .context("Failed to create snippet")?;
+        Ok(())
+    }
+
+    pub fn update_snippet(
+        &self,
+        id: i64,
+        name: &str,
+        description: Option<&str>,
+        tags: Option<&str>,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn
+            .execute(
+                "UPDATE snippets
+                 SET name = ?1, description = ?2, tags = ?3, updated_at = ?4
+                 WHERE id = ?5",
+                params![name, description, tags, now, id],
+            )
+            .context("Failed to update snippet")?;
+        Ok(())
+    }
+
+    pub fn delete_snippet(&self, id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM snippets WHERE id = ?1", params![id])
+            .context("Failed to delete snippet")?;
+        Ok(())
+    }
+
+    pub fn get_all_snippets(&self) -> Result<Vec<Snippet>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, command, description, scope, tags, created_at, updated_at
+             FROM snippets ORDER BY updated_at DESC, id DESC",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            let scope_str: String = row.get(4)?;
+            let scope = match scope_str.as_str() {
+                "project" => SnippetScope::Project,
+                "global" => SnippetScope::Global,
+                _ => return Err(rusqlite::Error::InvalidColumnType(4, "scope".into(), rusqlite::types::Type::Text)),
+            };
+
+            Ok(Snippet {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                command: row.get(2)?,
+                description: row.get(3)?,
+                scope,
+                tags: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })?;
+
+        let mut snippets = Vec::new();
+        for row in rows {
+            snippets.push(row?);
+        }
+        Ok(snippets)
+    }
+
+    pub fn get_snippet(&self, id: i64) -> Result<Snippet> {
+        let snippet = self
+            .conn
+            .query_row(
+                "SELECT id, name, command, description, scope, tags, created_at, updated_at
+                 FROM snippets WHERE id = ?1",
+                params![id],
+                |row| {
+                    let scope_str: String = row.get(4)?;
+                    let scope = match scope_str.as_str() {
+                        "project" => SnippetScope::Project,
+                        "global" => SnippetScope::Global,
+                        _ => {
+                            return Err(rusqlite::Error::InvalidColumnType(
+                                4,
+                                "scope".into(),
+                                rusqlite::types::Type::Text,
+                            ))
+                        }
+                    };
+
+                    Ok(Snippet {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        command: row.get(2)?,
+                        description: row.get(3)?,
+                        scope,
+                        tags: row.get(5)?,
+                        created_at: row.get(6)?,
+                        updated_at: row.get(7)?,
+                    })
+                },
+            )
+            .context("Failed to fetch snippet")?;
+        Ok(snippet)
     }
 
     pub fn log_entry(
@@ -525,6 +693,56 @@ mod tests {
         assert_eq!(commands[0], "3");
         assert_eq!(commands[1], "1");
         assert_eq!(commands[2], "2");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_snippet_workflow() -> Result<()> {
+        let db = Database::init_memory()?;
+
+        db.create_snippet(
+            "Run tests",
+            "cargo test",
+            Some("Workspace test suite"),
+            SnippetScope::Project,
+            Some("rust,test"),
+        )?;
+
+        let snippets = db.get_all_snippets()?;
+        assert_eq!(snippets.len(), 1);
+        assert_eq!(snippets[0].name, "Run tests");
+        assert_eq!(snippets[0].command, "cargo test");
+        assert_eq!(snippets[0].scope, SnippetScope::Project);
+        assert_eq!(snippets[0].tags.as_deref(), Some("rust,test"));
+
+        let id = snippets[0].id;
+        db.update_snippet(
+            id,
+            "Run full tests",
+            Some("Expanded test suite"),
+            Some("rust,ci"),
+        )?;
+
+        let snippet = db.get_snippet(id)?;
+        assert_eq!(snippet.name, "Run full tests");
+        assert_eq!(snippet.description.as_deref(), Some("Expanded test suite"));
+        assert_eq!(snippet.tags.as_deref(), Some("rust,ci"));
+
+        db.delete_snippet(id)?;
+        assert!(db.get_all_snippets()?.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_snippet_scope_roundtrip() -> Result<()> {
+        let db = Database::init_memory()?;
+
+        db.create_snippet("Deploy", "bin/deploy", None, SnippetScope::Global, None)?;
+
+        let snippet = db.get_all_snippets()?.remove(0);
+        assert_eq!(snippet.scope, SnippetScope::Global);
 
         Ok(())
     }

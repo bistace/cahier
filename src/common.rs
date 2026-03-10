@@ -29,6 +29,12 @@ pub const TEMP_DIR: &str = "cahier_logs/tmp";
 /// File to store environment state
 pub const ENV_STORE_FILENAME: &str = "cahier_logs/env_state.json";
 
+/// Global Cahier configuration directory under the user's home directory
+pub const GLOBAL_CONFIG_DIR: &str = ".cahier";
+
+/// Global database filename for reusable snippets
+pub const GLOBAL_SNIPPETS_DB_FILENAME: &str = ".cahier/snippets.db";
+
 /// Initializes the session base directory once (defaults to the initial working directory).
 pub fn init_base_dir() -> PathBuf {
     let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -75,4 +81,18 @@ pub fn temp_dir() -> PathBuf {
 /// Returns the absolute path to the env store file for this session.
 pub fn env_store_path() -> PathBuf {
     base_dir().join(ENV_STORE_FILENAME)
+}
+
+/// Returns the absolute path to the global Cahier configuration directory.
+pub fn global_config_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(GLOBAL_CONFIG_DIR)
+}
+
+/// Returns the absolute path to the global snippets database.
+pub fn global_snippets_db_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(GLOBAL_SNIPPETS_DB_FILENAME)
 }
