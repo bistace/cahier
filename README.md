@@ -9,6 +9,7 @@ Unlike standard shell history which only saves command strings, Cahier preserves
 - **Full Session Recording**: Captures standard output (stdout/stderr), exit codes, and timing for every command.
 - **Structured Storage**: Uses a local SQLite database for reliable, queryable storage.
 - **Markdown Export**: Generate Markdown logs of your session with a single command.
+- **Command Snippets**: Promote useful commands into reusable project or global snippets, then send them back to the REPL from the editor.
 - **Smart Output Handling**:
   - Automatically redirects excessive output to external files to keep the database clean.
   - Configurable "ignore list" for interactive tools (vim, nano, htop, ssh, ...) to prevent capturing garbage output.
@@ -99,9 +100,21 @@ Manage and browse your session history with an interactive TUI editor.
 - **Management**:
   - `d`: Delete entry
   - `a`: Annotate entry
+  - `b`: Save selected command as a snippet
   - `J` / `K`: Move entry up/down
+- **Snippets**:
+  - `S`: Open the snippet browser
+  - In the snippet browser, `s` sends the selected snippet back to the REPL
 - **Execution**: `s` to send command to REPL
 - **Quit**: `q`
+
+When creating a snippet, Cahier opens a popup in the editor where you can set:
+- `name`
+- `description`
+- `scope` (`project` or `global`)
+- `tags`
+
+`project` snippets are stored with the current Cahier notebook. `global` snippets are stored in a shared Cahier database under your home directory and can be reused from other projects.
 
 ## Configuration
 
@@ -149,4 +162,3 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 ## License
 
 This project is licensed under the MIT License.
-
