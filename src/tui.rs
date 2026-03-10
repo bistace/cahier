@@ -997,13 +997,6 @@ fn render_create_snippet_popup(f: &mut Frame, app: &mut App) {
         SnippetScope::Global => "Global",
     };
 
-    let name_text = active_field_text(&form.name, form.active_field == SnippetField::Name);
-    let description_text = active_field_text(
-        &form.description,
-        form.active_field == SnippetField::Description,
-    );
-    let tags_text = active_field_text(&form.tags, form.active_field == SnippetField::Tags);
-
     let text = vec![
         Line::styled(
             "Create Snippet",
@@ -1017,7 +1010,10 @@ fn render_create_snippet_popup(f: &mut Frame, app: &mut App) {
         Line::raw(""),
         Line::from(vec![
             Span::styled("Name: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::styled(name_text, field_style(form.active_field == SnippetField::Name)),
+            Span::styled(
+                form.name.clone(),
+                field_style(form.active_field == SnippetField::Name),
+            ),
         ]),
         Line::from(vec![
             Span::styled(
@@ -1025,7 +1021,7 @@ fn render_create_snippet_popup(f: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                description_text,
+                form.description.clone(),
                 field_style(form.active_field == SnippetField::Description),
             ),
         ]),
@@ -1038,7 +1034,10 @@ fn render_create_snippet_popup(f: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled("Tags: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::styled(tags_text, field_style(form.active_field == SnippetField::Tags)),
+            Span::styled(
+                form.tags.clone(),
+                field_style(form.active_field == SnippetField::Tags),
+            ),
         ]),
         Line::raw(""),
         Line::styled(
@@ -1051,14 +1050,26 @@ fn render_create_snippet_popup(f: &mut Frame, app: &mut App) {
         .block(Block::default().borders(Borders::ALL).title("Snippet"))
         .wrap(Wrap { trim: true });
     f.render_widget(paragraph, area);
-}
 
-fn active_field_text(value: &str, active: bool) -> String {
-    if active {
-        format!("{value}|")
-    } else {
-        value.to_string()
-    }
+    let (cursor_y, label_width, value_width) = match form.active_field {
+        SnippetField::Name => (4, "Name: ".chars().count() as u16, form.name.chars().count() as u16),
+        SnippetField::Description => (
+            5,
+            "Description: ".chars().count() as u16,
+            form.description.chars().count() as u16,
+        ),
+        SnippetField::Scope => (
+            6,
+            "Scope: ".chars().count() as u16,
+            scope_text.chars().count() as u16,
+        ),
+        SnippetField::Tags => (7, "Tags: ".chars().count() as u16, form.tags.chars().count() as u16),
+    };
+
+    f.set_cursor_position(Position::new(
+        area.x + 1 + label_width + value_width,
+        area.y + 1 + cursor_y,
+    ));
 }
 
 fn render_confirmation_popup(f: &mut Frame, title: &str, body: &str, color: Color) {
